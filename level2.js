@@ -96,6 +96,13 @@ const MOUNTAIN_SCALE = 1.15;
 const WATERFALL_DRAW_SCALE = 2.8;
 const PLATFORM_DRAW_SCALE = 1.1;
 
+// How far to shift waterfall.png upward on screen (canvas-space
+// pixels, before scaling) — the image was sitting low enough that
+// its top got clipped by the viewport. Increase to push it further
+// up; this is applied in drawClimbScene() scaled by the current
+// climbScale() so it stays in the right spot at any zoom level.
+const WATERFALL_Y_SHIFT = 260;
+
 // bounding boxes (in canvas pixels) of each of the 20 stone
 // platforms baked into platforms.png, extracted directly from the
 // artwork so a *cropped sprite* of each rock lines up with its
@@ -119,7 +126,15 @@ const PLATFORM_SRC_BOXES = [
 
 // How much further apart (relative to the group's own center) each
 // platform gets pushed. 1.0 = original layout, >1.0 = more spread.
-const SPREAD_FACTOR = 1.35;
+// PLATFORM_SRC_BOXES were extracted straight from the source art,
+// where the rocks already sit snug against the cliff/waterfall
+// texture (see the reference screenshot) — any real spread pushes
+// them away from that cliff face into open air, since the cropped
+// rock sprite doesn't carry the cliff notch behind it along with
+// it. Keep this close to 1.0 (a small nudge for breathing room)
+// rather than the larger values tried earlier, which put rocks
+// visibly floating off the mountain.
+const SPREAD_FACTOR = 1.08;
 
 function computeSpreadBoxes(boxes, factor) {
   let cx = 0, cy = 0;
@@ -136,6 +151,24 @@ function computeSpreadBoxes(boxes, factor) {
 
 // The boxes actually used for physics + on-screen placement.
 const PLATFORM_BOXES = computeSpreadBoxes(PLATFORM_SRC_BOXES, SPREAD_FACTOR);
+
+// Precomputed per-platform center + size in canvas space. Both
+// drawClimbScene() and the collision check build the on-screen box
+// from these same numbers (center + PLATFORM_DRAW_SCALE), so the
+// rock you can stand on is always exactly the rock that's drawn.
+// Previously the drawn sprite was scaled up by PLATFORM_DRAW_SCALE
+// but the collision box wasn't, so the visible rock and the
+// standable area didn't line up — that's fixed here.
+const PLATFORM_GEOM = PLATFORM_BOXES.map((b, i) => {
+  const src = PLATFORM_SRC_BOXES[i];
+  return {
+    cx: (b[0] + b[2]) / 2,
+    cy: (b[1] + b[3]) / 2,
+    w:  src[2] - src[0],
+    h:  src[3] - src[1],
+    srcX: src[0], srcY: src[1],
+  };
+});
 
 // ── fall-death tracking ─────────────────────────────────────
 // Generous world-space bounds around the cliff/platform set-piece.
@@ -301,16 +334,20 @@ function draw() {
   onGround = false;
 
   // ── platform collision: 20 stone ledges embedded in the cliff ──
-  // climbScreenX/Y already bake in the current camZoom pivoted on
-  // (charX, groundY()), so these boxes always match what's drawn.
+  // Built from the exact same center+size math as drawClimbScene(),
+  // including PLATFORM_DRAW_SCALE, so the standable box always
+  // matches the visible rock — no more falling through the edge of
+  // a rock that looks solid, and no standing on empty air past it.
   let s = climbScale();
-  for (let b of PLATFORM_BOXES) {
-    let sx0 = climbScreenX(b[0]);
-    let sx1 = climbScreenX(b[2]);
+  for (let g of PLATFORM_GEOM) {
+    let scx = climbScreenX(g.cx);
+    let scy = climbScreenY(g.cy);
+    let dw  = g.w * s * PLATFORM_DRAW_SCALE;
+    let dh  = g.h * s * PLATFORM_DRAW_SCALE;
+    let sx0 = scx - dw / 2;
+    let sx1 = scx + dw / 2;
     if (sx1 < -40 || sx0 > width+40) continue;
-    // small inset from the very top edge of each rock's silhouette
-    // gives a believable flat landing surface instead of the tip
-    let topY = climbScreenY(b[1]) + (b[3]-b[1]) * s * 0.12;
+    let topY = (scy - dh / 2) + dh * 0.12; // small inset from the rock's top silhouette
     let marginX = 10 * s;
     if (charX > sx0+marginX && charX < sx1-marginX) {
       if (prevFeet <= topY && charY >= topY && velY > 0) {
@@ -512,23 +549,25 @@ function drawClimbScene() {
   // it out so we only draw the actual cliff/waterfall artwork and
   // let the parallax scenery behind keep showing through elsewhere.
   // The extra draw scale makes it feel much larger than the screen.
+  // Shifted up by WATERFALL_Y_SHIFT (scaled with the current zoom)
+  // so its top no longer gets clipped by the top of the viewport.
   let cropX = 608, cropW = CANVAS_W - cropX;
-  image(imgWaterfall, climbScreenX(cropX), climbScreenY(0), cropW*waterfallScale, CANVAS_H*waterfallScale, cropX, 0, cropW, CANVAS_H);
+  let waterfallY = climbScreenY(0) - WATERFALL_Y_SHIFT * s;
+  image(imgWaterfall, climbScreenX(cropX), waterfallY, cropW*waterfallScale, CANVAS_H*waterfallScale, cropX, 0, cropW, CANVAS_H);
 
-  // Each stone ledge is drawn as its own cropped sprite: the crop
-  // rect comes from PLATFORM_SRC_BOXES (where the rock actually
-  // lives in platforms.png) but the on-screen position comes from
-  // PLATFORM_BOXES (the spread-out copy), so the rocks land further
-  // apart than they were originally drawn without distorting them.
-  for (let i = 0; i < PLATFORM_BOXES.length; i++) {
-    let src = PLATFORM_SRC_BOXES[i];
-    let dst = PLATFORM_BOXES[i];
-    let sx = src[0], sy = src[1], sw = src[2]-src[0], sh = src[3]-src[1];
-    let dx0 = climbScreenX(dst[0]);
-    let dy0 = climbScreenY(dst[1]);
-    let dw  = sw * platformScale, dh = sh * platformScale;
+  // Each stone ledge is drawn as its own cropped sprite, positioned
+  // from the same center-based geometry (PLATFORM_GEOM) the
+  // collision check uses above — so the drawn rock and the box you
+  // can actually stand on are always identical in size and position.
+  for (let g of PLATFORM_GEOM) {
+    let scx = climbScreenX(g.cx);
+    let scy = climbScreenY(g.cy);
+    let dw  = g.w * platformScale;
+    let dh  = g.h * platformScale;
+    let dx0 = scx - dw / 2;
+    let dy0 = scy - dh / 2;
     if (dx0 > width+50 || dx0+dw < -50) continue;
-    image(imgPlatforms, dx0, dy0, dw, dh, sx, sy, sw, sh);
+    image(imgPlatforms, dx0, dy0, dw, dh, g.srcX, g.srcY, g.w, g.h);
   }
   imageMode(CENTER);
 }
