@@ -112,6 +112,35 @@ function climbScreenY(cy)    { return cy * climbScale(); }
 function groundY()           { return GROUND_TOP_CANVAS_Y * climbScale(); }
 function toScreen(worldPos)  { return worldPos - worldX + charX - width * 0.25; }
 
+// ── camera zoom (mountain/cliff section) ────────────────────
+// As the player approaches the climb zone the camera eases out to
+// ZOOM_TARGET so more of the cliff and its platforms are visible,
+// then simply stays there — zoomedOut is a one-way latch, so a
+// small step backward (e.g. during a control-flip) won't zoom the
+// camera back in and out again.
+let camZoom      = 1;
+let zoomedOut    = false;
+const ZOOM_TRIGGER = CLIMB_ZONE_START - 900; // start easing out a bit before the cliff
+const ZOOM_TARGET  = 0.78;                   // final "pulled back" zoom level
+const ZOOM_SPEED   = 0.015;                  // easing rate per frame toward target
+
+function updateZoom() {
+  if (!zoomedOut && worldX >= ZOOM_TRIGGER) zoomedOut = true;
+  let target = zoomedOut ? ZOOM_TARGET : 1;
+  camZoom += (target - camZoom) * ZOOM_SPEED;
+}
+
+// ── per-layer size tuning ────────────────────────────────────
+// How much bigger than a plain "cover" fit the trees/ground layers
+// are drawn, bottom-anchored so the extra size pushes their top
+// edge upward — this is what makes the ground read as a big chunk
+// of dirt/cliff-face instead of a thin strip. Tune these two by eye
+// to match the reference screenshot.
+const TREES_GROWTH  = 0.7;
+const GROUND_GROWTH = 1.8;
+const FARMOUNT_GROWTH = 1.0; 
+const CLOSEMOUNT_GROWTH = 1.4;
+
 // ─────────────────────────────────────────────────────────
 function preload() {
   // Every image gets an explicit failure callback. Without one, a
@@ -247,9 +276,16 @@ function draw() {
     return;
   }
 
+  updateZoom();
+  push();
+  translate(width/2, height/2);
+  scale(camZoom);
+  translate(-width/2, -height/2);
   drawBG();
   drawClimbScene();
   drawChar();
+  pop();
+  // HUD stays outside the zoom transform so text/bars never shrink
   drawHUD();
   drawFlipHUD();
 }
@@ -269,12 +305,30 @@ function updateFlip() {
 }
 
 // ─────────────────────────────────────────────────────────
-function tileLayer(img, destH, destY, scrollAmt) {
+// "Cover" style scaling (like CSS background-size:cover): the scale
+// is driven by whichever dimension needs it more, so every tile
+// always fully spans BOTH the canvas width and height — no slivers
+// of empty space at the top/bottom or between tiles, regardless of
+// how the source art's aspect ratio compares to the window's.
+//
+// growth (default 1) lets a specific layer be sized larger than a
+// plain "cover" fit — e.g. the ground/cliff-face strip, which should
+// read as a much bigger chunk of the screen than a thin background
+// band. When anchorBottom is true (the default), the layer's bottom
+// edge stays pinned to the bottom of the canvas and the extra height
+// from growth extends upward, so a bigger ground reveals more of
+// itself higher up the screen instead of spilling off the bottom.
+function tileLayer(img, destH, destY, scrollAmt, growth = 1, anchorBottom = false) {
   if (!img) return;
-  let scale=destH/img.height, tileW=img.width*scale;
-  let offset=((scrollAmt*scale)%tileW+tileW)%tileW;
-  let n=ceil(width/tileW)+2;
-  for (let i=-1;i<n;i++) image(img,i*tileW-offset,destY,tileW,destH);
+  let scale = max(width / img.width, destH / img.height) * growth;
+  let tileW = img.width * scale;
+  let tileH = img.height * scale;
+  let yOff  = anchorBottom
+    ? (destY + destH) - tileH                 // bottom edge pinned; grows upward
+    : destY - (tileH - destH) / 2;            // recenter vertically (old "cover" behavior)
+  let offset = ((scrollAmt*scale)%tileW+tileW)%tileW;
+  let n = ceil(width/tileW)+2;
+  for (let i=-1;i<n;i++) image(img,i*tileW-offset,yOff,tileW,tileH);
 }
 
 function drawBG() {
@@ -330,10 +384,15 @@ function drawBG() {
 
   // ambient parallax layers, all sharing the same 1528px design
   // canvas so their ground lines line up with the cliff set-piece
-  tileLayer(imgDistant, height, 0, worldX*0.15);
-  tileLayer(imgCloser,  height, 0, worldX*0.35);
-  tileLayer(imgTrees,   height, 0, worldX*0.55);
-  tileLayer(imgGround,  height, 0, worldX*0.85);
+  tileLayer(imgDistant, height, -290, worldX*0.15, FARMOUNT_GROWTH);
+  tileLayer(imgCloser,  height, -220, worldX*0.35, CLOSEMOUNT_GROWTH);
+  // trees and ground are grown beyond a plain "cover" fit and
+  // anchored to the bottom of the screen — reveals a much taller
+  // strip of each, matching the reference screenshot proportions,
+  // with the growth pushing their visible top edge further up.
+  // Ground is drawn first so the trees layer renders in front of it.
+  tileLayer(imgGround,  height, 0, worldX*0.85, GROUND_GROWTH, true);
+  tileLayer(imgTrees,   height, -210, worldX*0.55, TREES_GROWTH,  true);
 }
 
 // ─────────────────────────────────────────────────────────
@@ -537,6 +596,7 @@ function keyPressed() {
     velY=0; onGround=true;
     charX=width*0.25; charY=groundY();
     hasClimbed=false;
+    camZoom=1; zoomedOut=false;
     if (sndMusic && sndMusic.isLoaded()) { sndMusic.stop(); sndMusic.loop(); }
   }
 }
