@@ -49,6 +49,7 @@ let isMoving   = false;
 const GRAVITY    = 0.65;
 const JUMP_FORCE = -18;
 const WALK_SPEED = 4;
+const CHAR_DRAW_OFFSET = -164;
 
 let worldX      = 0;
 const LEVEL_END = 9500;
@@ -83,10 +84,24 @@ const CANVAS_W   = 1901;
 const CANVAS_H   = 1528;
 const GROUND_TOP_CANVAS_Y = 1255; // top edge of the ground.png strip
 
+// Makes the whole cliff/waterfall/platform formation read as a
+// bigger chunk of mountain than a plain 1:1 fit of the design
+// canvas would give. This is a *static* multiplier (separate from
+// the dynamic camera zoom below) — tune it by eye.
+const MOUNTAIN_SCALE = 1.15;
+
 // bounding boxes (in canvas pixels) of each of the 20 stone
 // platforms baked into platforms.png, extracted directly from the
-// artwork so the collision boxes line up with the drawn rocks.
-const PLATFORM_BOXES = [
+// artwork so a *cropped sprite* of each rock lines up with its
+// source art. These are kept as the source/crop rects only — the
+// boxes actually used for drawing position + collision are the
+// "spread" copies computed below, which push each platform further
+// from its neighbors while still cropping the correct rock texture
+// out of the sheet. Because we're moving the platforms away from
+// the notches carved into the cliff texture, they'll sit slightly
+// proud of the rock face rather than flush in it — an intentional
+// trade-off for the extra spacing.
+const PLATFORM_SRC_BOXES = [
   [1034,830,1213,930],  [1114,1162,1293,1262], [1121,974,1299,1038],
   [1179,615,1358,715],  [1302,809,1480,873],   [1305,909,1484,1009],
   [1358,210,1537,310],  [1363,507,1541,572],   [1364,1098,1542,1163],
@@ -96,21 +111,61 @@ const PLATFORM_BOXES = [
   [1700,154,1879,254],  [1701,745,1880,845],
 ];
 
+// How much further apart (relative to the group's own center) each
+// platform gets pushed. 1.0 = original layout, >1.0 = more spread.
+const SPREAD_FACTOR = 1.35;
+
+function computeSpreadBoxes(boxes, factor) {
+  let cx = 0, cy = 0;
+  for (let b of boxes) { cx += (b[0] + b[2]) / 2; cy += (b[1] + b[3]) / 2; }
+  cx /= boxes.length; cy /= boxes.length;
+  return boxes.map(b => {
+    let w = b[2] - b[0], h = b[3] - b[1];
+    let ctrX = (b[0] + b[2]) / 2, ctrY = (b[1] + b[3]) / 2;
+    let nCtrX = cx + (ctrX - cx) * factor;
+    let nCtrY = cy + (ctrY - cy) * factor;
+    return [nCtrX - w / 2, nCtrY - h / 2, nCtrX + w / 2, nCtrY + h / 2];
+  });
+}
+
+// The boxes actually used for physics + on-screen placement.
+const PLATFORM_BOXES = computeSpreadBoxes(PLATFORM_SRC_BOXES, SPREAD_FACTOR);
+
 // ── fall-death tracking ─────────────────────────────────────
 // Generous world-space bounds around the cliff/platform set-piece.
-// climbScale() is always <= 1 for any reasonable canvas height, so
-// CANVAS_W is a safe upper bound on the scaled width of the scene.
-const CLIMB_ZONE_START = CLIMB_WX - 200;
-const CLIMB_ZONE_END   = CLIMB_WX + CANVAS_W + 200;
+// Padded extra to account for MOUNTAIN_SCALE and the platform
+// spread pushing some rocks outside the raw CANVAS_W footprint.
+const CLIMB_ZONE_START = CLIMB_WX - 400;
+const CLIMB_ZONE_END   = CLIMB_WX + CANVAS_W * MOUNTAIN_SCALE * SPREAD_FACTOR + 400;
 let hasClimbed = false; // true once the player has landed on a platform this "life"
 
 function inClimbZone(wx) { return wx >= CLIMB_ZONE_START && wx <= CLIMB_ZONE_END; }
 
-function climbScale()        { return height / CANVAS_H; }
-function climbScreenX(cx)    { return toScreen(CLIMB_WX) + cx * climbScale(); }
-function climbScreenY(cy)    { return cy * climbScale(); }
-function groundY()           { return GROUND_TOP_CANVAS_Y * climbScale(); }
-function toScreen(worldPos)  { return worldPos - worldX + charX - width * 0.25; }
+// baseScale = the "resting" (unzoomed) canvas->screen scale, with
+// MOUNTAIN_SCALE folded in. This is what groundY() is built from,
+// so the character's stand height never moves due to camera zoom —
+// only baseScale() feeding climbScale() moves with camZoom.
+function baseScale()  { return (height / CANVAS_H) * MOUNTAIN_SCALE; }
+function climbScale() { return baseScale() * camZoom; }
+function groundY()    { return GROUND_TOP_CANVAS_Y * baseScale(); }
+function toScreen(worldPos) { return worldPos - worldX + charX - width * 0.25; }
+
+// climbScreenX/Y map a canvas-space coordinate to a screen-space
+// coordinate, scaling about the pivot point (charX, groundY()) —
+// the exact spot the character is standing on the ground. Because
+// collision detection (below) calls these same two functions, the
+// platforms the player collides with are always exactly where
+// they're drawn, at any zoom level, with no separate transform to
+// keep in sync.
+function climbScreenX(cx) {
+  let rawX = toScreen(CLIMB_WX) + cx * baseScale();
+  return charX + (rawX - charX) * camZoom;
+}
+function climbScreenY(cy) {
+  let rawY = cy * baseScale();
+  let pivotY = groundY();
+  return pivotY + (rawY - pivotY) * camZoom;
+}
 
 // ── camera zoom (mountain/cliff section) ────────────────────
 // As the player approaches the climb zone the camera eases out to
@@ -121,7 +176,7 @@ function toScreen(worldPos)  { return worldPos - worldX + charX - width * 0.25; 
 let camZoom      = 1;
 let zoomedOut    = false;
 const ZOOM_TRIGGER = CLIMB_ZONE_START - 900; // start easing out a bit before the cliff
-const ZOOM_TARGET  = 0.78;                   // final "pulled back" zoom level
+const ZOOM_TARGET  = 0.72;                   // final "pulled back" zoom level
 const ZOOM_SPEED   = 0.015;                  // easing rate per frame toward target
 
 function updateZoom() {
@@ -140,6 +195,19 @@ const TREES_GROWTH  = 0.7;
 const GROUND_GROWTH = 1.8;
 const FARMOUNT_GROWTH = 1.0; 
 const CLOSEMOUNT_GROWTH = 1.4;
+
+// How fast each parallax layer scrolls relative to worldX. Lower =
+// feels farther away (moves less per step you take), higher = feels
+// closer (moves almost 1:1 with your steps) — this is what actually
+// sells the depth. Ground is the "closest" layer at 1:1-ish speed;
+// everything else scrolls slower the farther back it's meant to be.
+// Trees share the ground's exact rate (see drawBG) since they're
+// rooted in it — a different rate would make them look like they're
+// sliding along the dirt instead of growing out of it.
+const SCROLL_CLOUDS   = 0.04;
+const SCROLL_DISTANT  = 0.10;
+const SCROLL_CLOSER   = 0.28;
+const SCROLL_GROUND   = 0.85;
 
 // ─────────────────────────────────────────────────────────
 function preload() {
@@ -227,6 +295,8 @@ function draw() {
   onGround = false;
 
   // ── platform collision: 20 stone ledges embedded in the cliff ──
+  // climbScreenX/Y already bake in the current camZoom pivoted on
+  // (charX, groundY()), so these boxes always match what's drawn.
   let s = climbScale();
   for (let b of PLATFORM_BOXES) {
     let sx0 = climbScreenX(b[0]);
@@ -277,15 +347,33 @@ function draw() {
   }
 
   updateZoom();
+
+  // Background & cliff shrink toward the character's fixed ground
+  // point as the camera pulls back — this is what makes the cliff
+  // read as a much bigger formation without the character itself
+  // shrinking. The pivot is (charX, groundY()): the spot the player
+  // is standing on right before the zoom starts, so nothing appears
+  // to slide out from under their feet as the scale changes.
   push();
-  translate(width/2, height/2);
+  translate(charX, groundY());
   scale(camZoom);
-  translate(-width/2, -height/2);
+  translate(-charX, -groundY());
   drawBG();
-  drawClimbScene();
-  drawChar();
   pop();
-  // HUD stays outside the zoom transform so text/bars never shrink
+
+  // drawClimbScene() computes its own screen coordinates via
+  // climbScreenX/Y, which already apply the same pivot + camZoom
+  // math used above — so it lines up with drawBG() without needing
+  // a second canvas transform, and stays in sync with the collision
+  // code (which calls the same two functions).
+  drawClimbScene();
+
+  // drawChar() is intentionally OUTSIDE any zoom transform — the
+  // character stays the same size and screen position while the
+  // world around it shrinks, which sells the "the mountain is huge"
+  // effect the player is walking up to.
+  drawChar();
+
   drawHUD();
   drawFlipHUD();
 }
@@ -379,20 +467,27 @@ function drawBG() {
   // procedural gradient so the time-of-day color still reads through
   push();
   tint(255, 95);
-  tileLayer(imgBg1, height, 0, worldX*0.05);
+  tileLayer(imgBg1, height, 0, worldX*SCROLL_CLOUDS);
   pop();
 
   // ambient parallax layers, all sharing the same 1528px design
-  // canvas so their ground lines line up with the cliff set-piece
-  tileLayer(imgDistant, height, -290, worldX*0.15, FARMOUNT_GROWTH);
-  tileLayer(imgCloser,  height, -220, worldX*0.35, CLOSEMOUNT_GROWTH);
-  // trees and ground are grown beyond a plain "cover" fit and
+  // canvas so their ground lines line up with the cliff set-piece.
+  // Scroll rate increases the "closer" a layer is meant to be, so
+  // distant peaks crawl by while the ground rushes past underfoot —
+  // that speed difference is what reads as depth.
+  tileLayer(imgDistant, height, -290, worldX*SCROLL_DISTANT, FARMOUNT_GROWTH);
+  tileLayer(imgCloser,  height, -220, worldX*SCROLL_CLOSER,  CLOSEMOUNT_GROWTH);
+  // Ground is drawn first so the trees layer renders in front of it.
+  // Trees and ground are grown beyond a plain "cover" fit and
   // anchored to the bottom of the screen — reveals a much taller
   // strip of each, matching the reference screenshot proportions,
   // with the growth pushing their visible top edge further up.
-  // Ground is drawn first so the trees layer renders in front of it.
-  tileLayer(imgGround,  height, 0, worldX*0.85, GROUND_GROWTH, true);
-  tileLayer(imgTrees,   height, -210, worldX*0.55, TREES_GROWTH,  true);
+  tileLayer(imgGround,  height, 0, worldX*SCROLL_GROUND, GROUND_GROWTH, true);
+  // Trees use the SAME scroll rate as the ground (SCROLL_GROUND, not
+  // their own) — they're rooted in it, so they need to move with it
+  // in lockstep or they visually slide along the dirt instead of
+  // standing still relative to it.
+  tileLayer(imgTrees,   height, -210, worldX*SCROLL_GROUND, TREES_GROWTH,  true);
 }
 
 // ─────────────────────────────────────────────────────────
@@ -411,9 +506,21 @@ function drawClimbScene() {
   let cropX = 608, cropW = CANVAS_W - cropX;
   image(imgWaterfall, climbScreenX(cropX), climbScreenY(0), cropW*s, CANVAS_H*s, cropX, 0, cropW, CANVAS_H);
 
-  // the stone ledges, drawn with the identical transform so they
-  // land exactly in the notches carved into the cliff texture
-  image(imgPlatforms, climbScreenX(0), climbScreenY(0), CANVAS_W*s, CANVAS_H*s, 0, 0, CANVAS_W, CANVAS_H);
+  // Each stone ledge is drawn as its own cropped sprite: the crop
+  // rect comes from PLATFORM_SRC_BOXES (where the rock actually
+  // lives in platforms.png) but the on-screen position comes from
+  // PLATFORM_BOXES (the spread-out copy), so the rocks land further
+  // apart than they were originally drawn without distorting them.
+  for (let i = 0; i < PLATFORM_BOXES.length; i++) {
+    let src = PLATFORM_SRC_BOXES[i];
+    let dst = PLATFORM_BOXES[i];
+    let sx = src[0], sy = src[1], sw = src[2]-src[0], sh = src[3]-src[1];
+    let dx0 = climbScreenX(dst[0]);
+    let dy0 = climbScreenY(dst[1]);
+    let dw  = sw * s, dh = sh * s;
+    if (dx0 > width+50 || dx0+dw < -50) continue;
+    image(imgPlatforms, dx0, dy0, dw, dh, sx, sy, sw, sh);
+  }
   imageMode(CENTER);
 }
 
@@ -422,7 +529,7 @@ function drawChar() {
   if (!imgSprites) return; // guard against a failed load
 
   let dispH=height*0.20, dispW=dispH*(119/135);
-  let drawX=charX-dispW/2, drawY=charY-dispH;
+  let drawX=charX-dispW/2, drawY=charY-dispH + CHAR_DRAW_OFFSET;
   imageMode(CORNER);
   push();
   if (facingLeft) { translate(drawX+dispW,drawY); scale(-1,1); }
