@@ -90,6 +90,12 @@ const GROUND_TOP_CANVAS_Y = 1255; // top edge of the ground.png strip
 // the dynamic camera zoom below) — tune it by eye.
 const MOUNTAIN_SCALE = 1.15;
 
+// Make the waterfall and platform sprites render larger than the
+// viewport so the cliff feels massive. Tune these upward/downward
+// if you want them even bigger or more restrained.
+const WATERFALL_DRAW_SCALE = 2.8;
+const PLATFORM_DRAW_SCALE = 1.1;
+
 // bounding boxes (in canvas pixels) of each of the 20 stone
 // platforms baked into platforms.png, extracted directly from the
 // artwork so a *cropped sprite* of each rock lines up with its
@@ -495,6 +501,8 @@ function drawClimbScene() {
   if (!imgWaterfall || !imgPlatforms) return; // guard against a failed load
 
   let s = climbScale();
+  let waterfallScale = s * WATERFALL_DRAW_SCALE;
+  let platformScale = s * PLATFORM_DRAW_SCALE;
   let leftSX  = climbScreenX(0);
   let rightSX = climbScreenX(CANVAS_W);
   if (rightSX < -50 || leftSX > width+50) return;
@@ -502,9 +510,10 @@ function drawClimbScene() {
   imageMode(CORNER);
   // waterfall.png has a blank white margin on its left third — crop
   // it out so we only draw the actual cliff/waterfall artwork and
-  // let the parallax scenery behind keep showing through elsewhere
+  // let the parallax scenery behind keep showing through elsewhere.
+  // The extra draw scale makes it feel much larger than the screen.
   let cropX = 608, cropW = CANVAS_W - cropX;
-  image(imgWaterfall, climbScreenX(cropX), climbScreenY(0), cropW*s, CANVAS_H*s, cropX, 0, cropW, CANVAS_H);
+  image(imgWaterfall, climbScreenX(cropX), climbScreenY(0), cropW*waterfallScale, CANVAS_H*waterfallScale, cropX, 0, cropW, CANVAS_H);
 
   // Each stone ledge is drawn as its own cropped sprite: the crop
   // rect comes from PLATFORM_SRC_BOXES (where the rock actually
@@ -517,7 +526,7 @@ function drawClimbScene() {
     let sx = src[0], sy = src[1], sw = src[2]-src[0], sh = src[3]-src[1];
     let dx0 = climbScreenX(dst[0]);
     let dy0 = climbScreenY(dst[1]);
-    let dw  = sw * s, dh = sh * s;
+    let dw  = sw * platformScale, dh = sh * platformScale;
     if (dx0 > width+50 || dx0+dw < -50) continue;
     image(imgPlatforms, dx0, dy0, dw, dh, sx, sy, sw, sh);
   }
