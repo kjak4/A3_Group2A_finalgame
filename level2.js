@@ -92,8 +92,11 @@ const MOUNTAIN_SCALE = 1.15;
 
 // Make the waterfall and platform sprites render larger than the
 // viewport so the cliff feels massive. Tune these upward/downward
-// if you want them even bigger or more restrained.
-const WATERFALL_DRAW_SCALE = 2.8;
+// if you want them even bigger or more restrained. Bumped up from
+// 2.8 so the whole cliff/waterfall reads as much taller — combined
+// with the vertical camera follow below, there's now a lot more
+// climb to show as the player goes up.
+const WATERFALL_DRAW_SCALE = 1.2;
 const PLATFORM_DRAW_SCALE = 1.1;
 
 // How far to shift waterfall.png upward on screen (canvas-space
@@ -125,32 +128,35 @@ const PLATFORM_SRC_BOXES = [
 ];
 
 // How much further apart (relative to the group's own center) each
-// platform gets pushed. 1.0 = original layout, >1.0 = more spread.
-// PLATFORM_SRC_BOXES were extracted straight from the source art,
-// where the rocks already sit snug against the cliff/waterfall
-// texture (see the reference screenshot) — any real spread pushes
-// them away from that cliff face into open air, since the cropped
-// rock sprite doesn't carry the cliff notch behind it along with
-// it. Keep this close to 1.0 (a small nudge for breathing room)
-// rather than the larger values tried earlier, which put rocks
-// visibly floating off the mountain.
-const SPREAD_FACTOR = 1.08;
+// platform gets pushed, independently per axis. 1.0 = original
+// layout, >1.0 = more spread. PLATFORM_SRC_BOXES were extracted
+// straight from the source art, where the rocks already sit snug
+// against the cliff/waterfall texture (see the reference
+// screenshot) — spreading them HORIZONTALLY pushes them away from
+// that cliff face into open air, since the cropped rock sprite
+// doesn't carry the cliff notch behind it along with it, so
+// SPREAD_FACTOR_X stays close to 1.0. Spreading them VERTICALLY is
+// safe (and desired, for a taller climb with clearer separate
+// jumps) since the tall cliff face behind them covers the whole
+// climb regardless of how far up/down a given rock sits.
+const SPREAD_FACTOR_X = 1.08;
+const SPREAD_FACTOR_Y = 2.0;
 
-function computeSpreadBoxes(boxes, factor) {
+function computeSpreadBoxes(boxes, factorX, factorY) {
   let cx = 0, cy = 0;
   for (let b of boxes) { cx += (b[0] + b[2]) / 2; cy += (b[1] + b[3]) / 2; }
   cx /= boxes.length; cy /= boxes.length;
   return boxes.map(b => {
     let w = b[2] - b[0], h = b[3] - b[1];
     let ctrX = (b[0] + b[2]) / 2, ctrY = (b[1] + b[3]) / 2;
-    let nCtrX = cx + (ctrX - cx) * factor;
-    let nCtrY = cy + (ctrY - cy) * factor;
+    let nCtrX = cx + (ctrX - cx) * factorX;
+    let nCtrY = cy + (ctrY - cy) * factorY;
     return [nCtrX - w / 2, nCtrY - h / 2, nCtrX + w / 2, nCtrY + h / 2];
   });
 }
 
 // The boxes actually used for physics + on-screen placement.
-const PLATFORM_BOXES = computeSpreadBoxes(PLATFORM_SRC_BOXES, SPREAD_FACTOR);
+const PLATFORM_BOXES = computeSpreadBoxes(PLATFORM_SRC_BOXES, SPREAD_FACTOR_X, SPREAD_FACTOR_Y);
 
 // Precomputed per-platform center + size in canvas space. Both
 // drawClimbScene() and the collision check build the on-screen box
@@ -175,7 +181,7 @@ const PLATFORM_GEOM = PLATFORM_BOXES.map((b, i) => {
 // Padded extra to account for MOUNTAIN_SCALE and the platform
 // spread pushing some rocks outside the raw CANVAS_W footprint.
 const CLIMB_ZONE_START = CLIMB_WX - 400;
-const CLIMB_ZONE_END   = CLIMB_WX + CANVAS_W * MOUNTAIN_SCALE * SPREAD_FACTOR + 400;
+const CLIMB_ZONE_END   = CLIMB_WX + CANVAS_W * MOUNTAIN_SCALE * SPREAD_FACTOR_X + 400;
 let hasClimbed = false; // true once the player has landed on a platform this "life"
 
 function inClimbZone(wx) { return wx >= CLIMB_ZONE_START && wx <= CLIMB_ZONE_END; }
@@ -222,6 +228,25 @@ function updateZoom() {
   if (!zoomedOut && worldX >= ZOOM_TRIGGER) zoomedOut = true;
   let target = zoomedOut ? ZOOM_TARGET : 1;
   camZoom += (target - camZoom) * ZOOM_SPEED;
+}
+
+// ── vertical camera follow (climbing the cliff) ─────────────
+// charY is the character's real "world" height (unaffected by
+// this camera — physics/collision keep using it directly). camPanY
+// is a purely visual offset: everything that gets drawn is shifted
+// down on screen by -camPanY as the character climbs, so a much
+// taller cliff can be climbed without the character walking off
+// the top of the screen. camPanY is always <= 0 (it only pans
+// "up the cliff", never below the resting ground view), and eases
+// back toward 0 once the character comes back down near the ground.
+let camPanY = 0;
+const FOLLOW_SCREEN_Y = 0.45; // keep the climbing character around this fraction of screen height
+const PAN_SPEED = 0.08;       // easing rate per frame toward the target pan
+
+function updateVerticalCamera() {
+  let followY = height * FOLLOW_SCREEN_Y;
+  let targetPan = min(0, charY - followY);
+  camPanY += (targetPan - camPanY) * PAN_SPEED;
 }
 
 // ── per-layer size tuning ────────────────────────────────────
@@ -390,6 +415,16 @@ function draw() {
   }
 
   updateZoom();
+  updateVerticalCamera();
+
+  // The vertical pan wraps EVERYTHING that scrolls with the world
+  // (background, cliff/waterfall, platforms, character) but not the
+  // HUD — it's a simple screen-space shift applied on top of the
+  // existing horizontal/zoom transforms, so it stays independent of
+  // them. Physics (charY, climbScreenY, etc.) is untouched by this;
+  // only what gets drawn moves.
+  push();
+  translate(0, -camPanY);
 
   // Background & cliff shrink toward the character's fixed ground
   // point as the camera pulls back — this is what makes the cliff
@@ -414,8 +449,11 @@ function draw() {
   // drawChar() is intentionally OUTSIDE any zoom transform — the
   // character stays the same size and screen position while the
   // world around it shrinks, which sells the "the mountain is huge"
-  // effect the player is walking up to.
+  // effect the player is walking up to. It still moves with the
+  // vertical pan above, though, so it stays visible while climbing.
   drawChar();
+
+  pop();
 
   drawHUD();
   drawFlipHUD();
@@ -549,11 +587,25 @@ function drawClimbScene() {
   // it out so we only draw the actual cliff/waterfall artwork and
   // let the parallax scenery behind keep showing through elsewhere.
   // The extra draw scale makes it feel much larger than the screen.
-  // Shifted up by WATERFALL_Y_SHIFT (scaled with the current zoom)
-  // so its top no longer gets clipped by the top of the viewport.
+  //
+  // Anchored from its CENTER (not the crop's top-left corner): the
+  // old top-left anchor meant the oversized image only grew
+  // downward/rightward from that corner, so at large draw scales it
+  // drifted out of alignment with the platforms (which are always
+  // centered on their own canvas position) — the rocks could scroll
+  // into view before the enlarged cliff texture caught up to the
+  // same spot. Expanding symmetrically about the crop's center
+  // keeps it lined up with the platforms at any WATERFALL_DRAW_SCALE.
   let cropX = 608, cropW = CANVAS_W - cropX;
-  let waterfallY = climbScreenY(0) - WATERFALL_Y_SHIFT * s;
-  image(imgWaterfall, climbScreenX(cropX), waterfallY, cropW*waterfallScale, CANVAS_H*waterfallScale, cropX, 0, cropW, CANVAS_H);
+  let cropCenterCanvasX = cropX + cropW / 2;
+  let cropCenterCanvasY = CANVAS_H / 2;
+  let waterfallCenterX = climbScreenX(cropCenterCanvasX);
+  let waterfallCenterY = climbScreenY(cropCenterCanvasY) - WATERFALL_Y_SHIFT * s;
+  let waterfallW = cropW * waterfallScale;
+  let waterfallH = CANVAS_H * waterfallScale;
+  let waterfallDX = waterfallCenterX - waterfallW / 2;
+  let waterfallDY = waterfallCenterY - waterfallH / 2;
+  image(imgWaterfall, waterfallDX, waterfallDY, waterfallW, waterfallH, cropX, 0, cropW, CANVAS_H);
 
   // Each stone ledge is drawn as its own cropped sprite, positioned
   // from the same center-based geometry (PLATFORM_GEOM) the
@@ -751,7 +803,7 @@ function keyPressed() {
     velY=0; onGround=true;
     charX=width*0.25; charY=groundY();
     hasClimbed=false;
-    camZoom=1; zoomedOut=false;
+    camZoom=1; zoomedOut=false; camPanY=0;
     if (sndMusic && sndMusic.isLoaded()) { sndMusic.stop(); sndMusic.loop(); }
   }
 }
