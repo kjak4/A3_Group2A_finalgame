@@ -141,6 +141,7 @@ const PLATFORM_SRC_BOXES = [
 // climb regardless of how far up/down a given rock sits.
 const SPREAD_FACTOR_X = 1.08;
 const SPREAD_FACTOR_Y = 2.0;
+const PLATFORM_Y_OFFSET = -90;
 
 function computeSpreadBoxes(boxes, factorX, factorY) {
   let cx = 0, cy = 0;
@@ -150,7 +151,7 @@ function computeSpreadBoxes(boxes, factorX, factorY) {
     let w = b[2] - b[0], h = b[3] - b[1];
     let ctrX = (b[0] + b[2]) / 2, ctrY = (b[1] + b[3]) / 2;
     let nCtrX = cx + (ctrX - cx) * factorX;
-    let nCtrY = cy + (ctrY - cy) * factorY;
+    let nCtrY = cy + (ctrY - cy) * factorY + PLATFORM_Y_OFFSET;
     return [nCtrX - w / 2, nCtrY - h / 2, nCtrX + w / 2, nCtrY + h / 2];
   });
 }
@@ -183,6 +184,18 @@ const PLATFORM_GEOM = PLATFORM_BOXES.map((b, i) => {
 const CLIMB_ZONE_START = CLIMB_WX - 400;
 const CLIMB_ZONE_END   = CLIMB_WX + CANVAS_W * MOUNTAIN_SCALE * SPREAD_FACTOR_X + 400;
 let hasClimbed = false; // true once the player has landed on a platform this "life"
+
+// While camera zoom is easing toward its target, every platform's
+// on-screen position drifts a little EVERY frame (see updateZoom()).
+// If a standing character's slow gravity-driven position can't keep
+// up with that drift, the old "did we cross the surface this frame"
+// collision test can miss — causing the character to silently lose
+// contact with a rock it's visually standing on. To fix this we
+// remember which platform (if any) the character is currently
+// "riding" and, each frame, snap directly to its current position
+// (like a moving platform) as long as the character is still within
+// its X-range, instead of only re-detecting the crossing event.
+let standingPlatformIndex = -1;
 
 function inClimbZone(wx) { return wx >= CLIMB_ZONE_START && wx <= CLIMB_ZONE_END; }
 
@@ -359,7 +372,7 @@ function draw() {
   if (goRight) { worldX += WALK_SPEED; facingLeft=false; isMoving=true; }
 
   if ((keyIsDown(32)||keyIsDown(87)||keyIsDown(38)) && onGround) {
-    velY=JUMP_FORCE; onGround=false;
+    velY=JUMP_FORCE; onGround=false; standingPlatformIndex=-1;
     if (sndJump && sndJump.isLoaded()) { sndJump.stop(); sndJump.setVolume(0.1); sndJump.play(); }
   }
 
@@ -378,6 +391,7 @@ function draw() {
     if (animTimer>=ANIM_SPEED) { animTimer=0; animFrame=(animFrame+1)%NUM_FRAMES; }
   } else { animFrame=0; animTimer=0; }
 
+  let prevY = charY;
   velY  += GRAVITY;
   charY += velY;
 
@@ -395,29 +409,60 @@ function draw() {
   updateVerticalCamera();
 
   let gy = groundY();
-  let prevFeet = charY - velY;
 
   onGround = false;
 
   // ── platform collision: 20 stone ledges embedded in the cliff ──
   // Built from the exact same center+size math as drawClimbScene(),
   // including PLATFORM_DRAW_SCALE, so the standable box always
-  // matches the visible rock — no more falling through the edge of
-  // a rock that looks solid, and no standing on empty air past it.
+  // matches the visible rock.
   let s = climbScale();
-  for (let g of PLATFORM_GEOM) {
+
+  // Pass 1: if we were already riding a platform last frame, stay
+  // glued to its CURRENT position first. This is what survives
+  // camera-zoom drift — rather than only checking "did we cross the
+  // surface this frame," we directly recompute where that specific
+  // platform is right now and snap to it, exactly like standing on a
+  // moving platform. If we've walked past its edge, let go and fall.
+  if (standingPlatformIndex !== -1) {
+    let g = PLATFORM_GEOM[standingPlatformIndex];
     let scx = climbScreenX(g.cx);
     let scy = climbScreenY(g.cy);
     let dw  = g.w * s * PLATFORM_DRAW_SCALE;
     let dh  = g.h * s * PLATFORM_DRAW_SCALE;
     let sx0 = scx - dw / 2;
     let sx1 = scx + dw / 2;
-    if (sx1 < -40 || sx0 > width+40) continue;
-    let topY = (scy - dh / 2) + dh * 0.12; // small inset from the rock's top silhouette
+    let topY = (scy - dh / 2) + dh * 0.12;
     let marginX = 10 * s;
-    if (charX > sx0+marginX && charX < sx1-marginX) {
-      if (prevFeet <= topY && charY >= topY && velY > 0) {
+    let withinX = charX > sx0 + marginX && charX < sx1 - marginX;
+    let nearSurface = charY <= topY + 8 && charY >= topY - 8;
+    if (withinX && nearSurface && velY >= 0) {
+      charY = topY; velY = 0; onGround = true;
+    } else {
+      standingPlatformIndex = -1; // walked off the edge or jumped away
+    }
+  }
+
+  // Pass 2: not currently riding a platform (or just fell off) —
+  // check for a fresh landing the normal way (falling motion crossing
+  // a platform's surface this frame).
+  if (!onGround) {
+    for (let i = 0; i < PLATFORM_GEOM.length; i++) {
+      let g = PLATFORM_GEOM[i];
+      let scx = climbScreenX(g.cx);
+      let scy = climbScreenY(g.cy);
+      let dw  = g.w * s * PLATFORM_DRAW_SCALE;
+      let dh  = g.h * s * PLATFORM_DRAW_SCALE;
+      let sx0 = scx - dw / 2;
+      let sx1 = scx + dw / 2;
+      if (sx1 < -40 || sx0 > width+40) continue;
+      let topY = (scy - dh / 2) + dh * 0.12; // small inset from the rock's top silhouette
+      let marginX = 10 * s;
+      let withinX = charX > sx0 + marginX && charX < sx1 - marginX;
+      if (withinX && prevY <= topY && charY >= topY && velY > 0) {
         charY = topY; velY = 0; onGround = true;
+        standingPlatformIndex = i;
+        break;
       }
     }
   }
@@ -432,11 +477,13 @@ function draw() {
     if (hasClimbed && inClimbZone(worldX)) {
       gameLost = true;
       loseReason = 'fall';
+      standingPlatformIndex = -1;
       if (sndDamage && sndDamage.isLoaded()) { sndDamage.stop(); sndDamage.play(); }
       if (sndMusic && sndMusic.isLoaded()) sndMusic.stop();
       return;
     }
     charY = gy; velY = 0; onGround = true;
+    standingPlatformIndex = -1;
   }
 
   updateFlip();
@@ -851,6 +898,7 @@ function keyPressed() {
     velY=0; onGround=true;
     charX=width*0.25; charY=groundY();
     hasClimbed=false;
+    standingPlatformIndex=-1;
     camZoom=1; zoomedOut=false; camPanY=0;
     if (sndMusic && sndMusic.isLoaded()) { sndMusic.stop(); sndMusic.loop(); }
   }
