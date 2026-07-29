@@ -44,7 +44,8 @@ let onGround   = false;
 let animFrame  = 0;
 let animTimer  = 0;
 let facingLeft = false;
-let isMoving   = false;
+let isMoving = false;
+let sKeyHeld = false;
 
 const GRAVITY    = 0.65;
 const JUMP_FORCE = -18;
@@ -142,6 +143,13 @@ const PLATFORM_SRC_BOXES = [
 const SPREAD_FACTOR_X = 1.08;
 const SPREAD_FACTOR_Y = 2.0;
 const PLATFORM_Y_OFFSET = -90;
+
+// ── platform visibility / fade mechanic ─────────────────────
+const PLATFORM_VISIBLE_FRAMES = 4 * 60;  // fully visible for 4 seconds after entering the climb zone
+const PLATFORM_FADE_FRAMES    = 30;      // then fades out over this many frames
+const PLATFORM_S_MIN_OPACITY  = 0.2;     // opacity floor while holding S
+const S_SPEED_MULTIPLIER      = 0.15;    // walk speed while holding S (fraction of WALK_SPEED) — "A LOT" slower
+let climbZoneTimer = 0; // frames spent in the climb zone this "life" — drives the fade
 
 function computeSpreadBoxes(boxes, factorX, factorY) {
   let cx = 0, cy = 0;
@@ -381,12 +389,26 @@ function draw() {
     return;
   }
 
-  isMoving = false;
+  let dt = constrain(deltaTime / (1000 / 60), 0, 3);
+
+   isMoving = false;
   let movingInput = keyIsDown(65) || keyIsDown(37) || keyIsDown(68) || keyIsDown(39);
   let goLeft  = flipped ? (keyIsDown(68)||keyIsDown(39)) : (keyIsDown(65)||keyIsDown(37));
   let goRight = flipped ? (keyIsDown(65)||keyIsDown(37)) : (keyIsDown(68)||keyIsDown(39));
-  if (goLeft)  { worldX -= WALK_SPEED; if (worldX<0) worldX=0; facingLeft=true;  isMoving=true; }
-  if (goRight) { worldX += WALK_SPEED; facingLeft=false; isMoving=true; }
+  // Holding S reveals the (otherwise invisible) platforms a little,
+  // at the cost of walking MUCH slower. Jump and left/right still
+  // work normally, just at reduced speed — collision never changes,
+  // only what gets drawn.
+
+  let revealHeld = sKeyHeld;
+  let currentWalkSpeed = revealHeld ? WALK_SPEED * S_SPEED_MULTIPLIER : WALK_SPEED;
+  if (goLeft)  { worldX -= currentWalkSpeed * dt; if (worldX<0) worldX=0; facingLeft=true;  isMoving=true; }
+  if (goRight) { worldX += currentWalkSpeed * dt; facingLeft=false; isMoving=true; }
+
+  // Drives the platform fade below. Resets when clear of the climb
+  // zone so re-entering (e.g. after a fall back to base ground)
+  // shows the platforms fresh for another 4 seconds.
+  if (inClimbZone(worldX)) climbZoneTimer++; else climbZoneTimer = 0;
 
   if ((keyIsDown(32)||keyIsDown(87)||keyIsDown(38)) && onGround) {
     velY=JUMP_FORCE; onGround=false; standingPlatformIndex=-1;
@@ -408,9 +430,9 @@ function draw() {
     if (animTimer>=ANIM_SPEED) { animTimer=0; animFrame=(animFrame+1)%NUM_FRAMES; }
   } else { animFrame=0; animTimer=0; }
 
-  let prevY = charY;
-  velY  += GRAVITY;
-  charY += velY;
+ let prevY = charY;
+  velY  += GRAVITY * dt;
+  charY += velY * dt;
 
   // ── camera updates moved BEFORE collision ───────────────────
   // Previously these ran after the platform-collision loop, so
@@ -549,13 +571,14 @@ function draw() {
   translate(-charX, -groundY());
   drawBG();
   pop();
+  
 
   // drawClimbScene() computes its own screen coordinates via
   // climbScreenX/Y, which already apply the same pivot + camZoom
   // math used above — so it lines up with drawBG() without needing
   // a second canvas transform, and stays in sync with the collision
   // code (which calls the same two functions).
-  drawClimbScene();
+   drawClimbScene(platformOpacity(revealHeld));
   drawDebugPlatformBoxes(); // no-op unless DEBUG_COLLISION is toggled on ('P')
 
   // drawChar() is intentionally OUTSIDE any zoom transform — the
@@ -683,8 +706,19 @@ function drawBG() {
   tileLayer(imgTrees,   height, -210, worldX*SCROLL_GROUND, TREES_GROWTH,  true);
 }
 
+function platformOpacity(revealHeld) {
+  let base;
+  if (climbZoneTimer < PLATFORM_VISIBLE_FRAMES) {
+    base = 1;
+  } else {
+    let t = (climbZoneTimer - PLATFORM_VISIBLE_FRAMES) / PLATFORM_FADE_FRAMES;
+    base = constrain(1 - t, 0, 1);
+  }
+  return revealHeld ? max(base, PLATFORM_S_MIN_OPACITY) : base;
+}
+
 // ─────────────────────────────────────────────────────────
-function drawClimbScene() {
+function drawClimbScene(opacity) {
   if (!imgWaterfall || !imgPlatforms) return; // guard against a failed load
 
   let s = climbScale();
@@ -723,7 +757,7 @@ function drawClimbScene() {
   // from the same center-based geometry (PLATFORM_GEOM) the
   // collision check uses above — so the drawn rock and the box you
   // can actually stand on are always identical in size and position.
-  for (let g of PLATFORM_GEOM) {
+   for (let g of PLATFORM_GEOM) {
     let scx = climbScreenX(g.cx);
     let scy = climbScreenY(g.cy);
     let dw  = g.w * platformScale;
@@ -907,6 +941,7 @@ function drawWinScreen() {
 // ─────────────────────────────────────────────────────────
 function keyPressed() {
   startAudioOnce();
+  if (keyCode === 83) sKeyHeld = true;
 
   if (key === 'p' || key === 'P') { DEBUG_COLLISION = !DEBUG_COLLISION; return; }
 
@@ -925,10 +960,20 @@ function keyPressed() {
     charX=width*0.25; charY=groundY();
     hasClimbed=false;
     standingPlatformIndex=-1;
+    climbZoneTimer=0;
     camZoom=1; zoomedOut=false; camPanY=0;
     if (sndMusic && sndMusic.isLoaded()) { sndMusic.stop(); sndMusic.loop(); }
   }
 }
+
+function keyReleased() {
+  if (keyCode === 83) sKeyHeld = false;
+}
+
+// Safety net: if the window/tab loses focus while S is physically held,
+// the browser may never deliver the matching keyup — force-clear it here
+// so movement can't stay stuck slow indefinitely.
+window.addEventListener('blur', () => { sKeyHeld = false; });
 
 function mousePressed() {
   startAudioOnce();
