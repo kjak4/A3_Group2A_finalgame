@@ -273,6 +273,33 @@ const SCROLL_DISTANT  = 0.10;
 const SCROLL_CLOSER   = 0.28;
 const SCROLL_GROUND   = 0.85;
 
+// ── debug collision overlay ─────────────────────────────────
+// Toggle at runtime with the 'P' key. Draws the exact landing line
+// (red) and full sprite box (green) for every platform, using the
+// SAME math as both drawClimbScene() and the collision check, so
+// what you see is guaranteed to be what the game is testing against.
+let DEBUG_COLLISION = false;
+
+function drawDebugPlatformBoxes() {
+  if (!DEBUG_COLLISION) return;
+  let s = climbScale();
+  noFill(); strokeWeight(2);
+  for (let g of PLATFORM_GEOM) {
+    let scx = climbScreenX(g.cx);
+    let scy = climbScreenY(g.cy);
+    let dw  = g.w * s * PLATFORM_DRAW_SCALE;
+    let dh  = g.h * s * PLATFORM_DRAW_SCALE;
+    let sx0 = scx - dw / 2;
+    let sx1 = scx + dw / 2;
+    let topY = (scy - dh / 2) + dh * 0.12;
+    stroke(255, 0, 0);
+    rect(sx0, topY, sx1 - sx0, 8);         // the actual landable surface
+    stroke(0, 255, 0, 150);
+    rect(sx0, scy - dh / 2, dw, dh);        // full sprite bounding box
+  }
+  noStroke();
+}
+
 // ─────────────────────────────────────────────────────────
 function preload() {
   // Every image gets an explicit failure callback. Without one, a
@@ -353,6 +380,20 @@ function draw() {
 
   velY  += GRAVITY;
   charY += velY;
+
+  // ── camera updates moved BEFORE collision ───────────────────
+  // Previously these ran after the platform-collision loop, so
+  // every frame's collision math used the PREVIOUS frame's camZoom/
+  // camPanY while the render used the CURRENT frame's — a one-frame
+  // lag between what's drawn and what's collidable. That lag is
+  // invisible at small scales but becomes a large pixel offset once
+  // the waterfall/platform draw scale is big, which is why jumps
+  // were whiffing. Updating zoom/pan here, before climbScale() and
+  // climbScreenX/Y are used below, keeps collision and rendering
+  // perfectly in sync every frame.
+  updateZoom();
+  updateVerticalCamera();
+
   let gy = groundY();
   let prevFeet = charY - velY;
 
@@ -414,9 +455,6 @@ function draw() {
     return;
   }
 
-  updateZoom();
-  updateVerticalCamera();
-
   // The vertical pan wraps EVERYTHING that scrolls with the world
   // (background, cliff/waterfall, platforms, character) but not the
   // HUD — it's a simple screen-space shift applied on top of the
@@ -445,6 +483,7 @@ function draw() {
   // a second canvas transform, and stays in sync with the collision
   // code (which calls the same two functions).
   drawClimbScene();
+  drawDebugPlatformBoxes(); // no-op unless DEBUG_COLLISION is toggled on ('P')
 
   // drawChar() is intentionally OUTSIDE any zoom transform — the
   // character stays the same size and screen position while the
@@ -664,6 +703,13 @@ function drawHUD() {
     if (floor(frameCount/25)%2===0||progress<0.92) text('the canyon light is fading...',width/2,pad);
     textStyle(NORMAL);
   }
+
+  if (DEBUG_COLLISION) {
+    fill(255,255,0); textFont('monospace'); textStyle(BOLD); textSize(height*0.016);
+    textAlign(LEFT,TOP);
+    text('DEBUG COLLISION ON (press P to toggle)', pad, pad);
+    textStyle(NORMAL);
+  }
 }
 
 // ─────────────────────────────────────────────────────────
@@ -789,6 +835,8 @@ function drawWinScreen() {
 function keyPressed() {
   startAudioOnce();
 
+  if (key === 'p' || key === 'P') { DEBUG_COLLISION = !DEBUG_COLLISION; return; }
+
   if (introTimer > 0 && !introFadeStarted) {
     introFadeStarted = true;
     introTimer = INTRO_FADE_FRAMES;
@@ -811,3 +859,5 @@ function keyPressed() {
 function mousePressed() {
   startAudioOnce();
 }
+
+
