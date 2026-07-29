@@ -157,7 +157,24 @@ function computeSpreadBoxes(boxes, factorX, factorY) {
 }
 
 // The boxes actually used for physics + on-screen placement.
-const PLATFORM_BOXES = computeSpreadBoxes(PLATFORM_SRC_BOXES, SPREAD_FACTOR_X, SPREAD_FACTOR_Y);
+const PLATFORM_GROUND_MARGIN = 20; // canvas px of breathing room above the ground line
+function clampAboveGround(boxes, srcBoxes) {
+  return boxes.map((b, i) => {
+    let srcH = srcBoxes[i][3] - srcBoxes[i][1];
+    let halfH = (srcH * PLATFORM_DRAW_SCALE) / 2;
+    let h = b[3] - b[1];
+    let cy = (b[1] + b[3]) / 2;
+    let maxCy = GROUND_TOP_CANVAS_Y - halfH - PLATFORM_GROUND_MARGIN;
+    if (cy > maxCy) cy = maxCy;
+    return [b[0], cy - h / 2, b[2], cy + h / 2];
+  });
+}
+
+// The boxes actually used for physics + on-screen placement.
+const PLATFORM_BOXES = clampAboveGround(
+  computeSpreadBoxes(PLATFORM_SRC_BOXES, SPREAD_FACTOR_X, SPREAD_FACTOR_Y),
+  PLATFORM_SRC_BOXES
+);
 
 // Precomputed per-platform center + size in canvas space. Both
 // drawClimbScene() and the collision check build the on-screen box
@@ -424,7 +441,7 @@ function draw() {
   // surface this frame," we directly recompute where that specific
   // platform is right now and snap to it, exactly like standing on a
   // moving platform. If we've walked past its edge, let go and fall.
-  if (standingPlatformIndex !== -1) {
+   if (standingPlatformIndex !== -1) {
     let g = PLATFORM_GEOM[standingPlatformIndex];
     let scx = climbScreenX(g.cx);
     let scy = climbScreenY(g.cy);
@@ -435,9 +452,14 @@ function draw() {
     let topY = (scy - dh / 2) + dh * 0.12;
     let marginX = 10 * s;
     let withinX = charX > sx0 + marginX && charX < sx1 - marginX;
-    let nearSurface = charY <= topY + 8 && charY >= topY - 8;
+    // Compare the character's VISIBLE feet (charY + CHAR_DRAW_OFFSET),
+    // not raw charY — otherwise the sprite renders CHAR_DRAW_OFFSET
+    // pixels away from the surface it's supposedly standing on.
+    let visFeet = charY + CHAR_DRAW_OFFSET;
+    let nearSurface = visFeet <= topY + 8 && visFeet >= topY - 8;
     if (withinX && nearSurface && velY >= 0) {
-      charY = topY; velY = 0; onGround = true;
+      // Solve for the charY that puts the VISUAL feet exactly at topY.
+      charY = topY - CHAR_DRAW_OFFSET; velY = 0; onGround = true;
     } else {
       standingPlatformIndex = -1; // walked off the edge or jumped away
     }
@@ -456,11 +478,15 @@ function draw() {
       let sx0 = scx - dw / 2;
       let sx1 = scx + dw / 2;
       if (sx1 < -40 || sx0 > width+40) continue;
-      let topY = (scy - dh / 2) + dh * 0.12; // small inset from the rock's top silhouette
+     let topY = (scy - dh / 2) + dh * 0.12; // small inset from the rock's top silhouette
       let marginX = 10 * s;
       let withinX = charX > sx0 + marginX && charX < sx1 - marginX;
-      if (withinX && prevY <= topY && charY >= topY && velY > 0) {
-        charY = topY; velY = 0; onGround = true;
+      // Same visual-feet correction as Pass 1 — compare where the
+      // sprite will actually be drawn, not the raw physics charY.
+      let prevFeet = prevY + CHAR_DRAW_OFFSET;
+      let currFeet = charY + CHAR_DRAW_OFFSET;
+      if (withinX && prevFeet <= topY && currFeet >= topY && velY > 0) {
+        charY = topY - CHAR_DRAW_OFFSET; velY = 0; onGround = true;
         standingPlatformIndex = i;
         break;
       }
