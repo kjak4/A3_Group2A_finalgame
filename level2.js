@@ -143,6 +143,13 @@ const SPREAD_FACTOR_X = 1.08;
 const SPREAD_FACTOR_Y = 2.0;
 const PLATFORM_Y_OFFSET = -90;
 
+// ── platform visibility / fade mechanic ─────────────────────
+const PLATFORM_VISIBLE_FRAMES = 4 * 60;  // fully visible for 4 seconds after entering the climb zone
+const PLATFORM_FADE_FRAMES    = 30;      // then fades out over this many frames
+const PLATFORM_S_MIN_OPACITY  = 0.2;     // opacity floor while holding S
+const S_SPEED_MULTIPLIER      = 0.15;    // walk speed while holding S (fraction of WALK_SPEED) — "A LOT" slower
+let climbZoneTimer = 0; // frames spent in the climb zone this "life" — drives the fade
+
 function computeSpreadBoxes(boxes, factorX, factorY) {
   let cx = 0, cy = 0;
   for (let b of boxes) { cx += (b[0] + b[2]) / 2; cy += (b[1] + b[3]) / 2; }
@@ -157,7 +164,24 @@ function computeSpreadBoxes(boxes, factorX, factorY) {
 }
 
 // The boxes actually used for physics + on-screen placement.
-const PLATFORM_BOXES = computeSpreadBoxes(PLATFORM_SRC_BOXES, SPREAD_FACTOR_X, SPREAD_FACTOR_Y);
+const PLATFORM_GROUND_MARGIN = 20; // canvas px of breathing room above the ground line
+function clampAboveGround(boxes, srcBoxes) {
+  return boxes.map((b, i) => {
+    let srcH = srcBoxes[i][3] - srcBoxes[i][1];
+    let halfH = (srcH * PLATFORM_DRAW_SCALE) / 2;
+    let h = b[3] - b[1];
+    let cy = (b[1] + b[3]) / 2;
+    let maxCy = GROUND_TOP_CANVAS_Y - halfH - PLATFORM_GROUND_MARGIN;
+    if (cy > maxCy) cy = maxCy;
+    return [b[0], cy - h / 2, b[2], cy + h / 2];
+  });
+}
+
+// The boxes actually used for physics + on-screen placement.
+const PLATFORM_BOXES = clampAboveGround(
+  computeSpreadBoxes(PLATFORM_SRC_BOXES, SPREAD_FACTOR_X, SPREAD_FACTOR_Y),
+  PLATFORM_SRC_BOXES
+);
 
 // Precomputed per-platform center + size in canvas space. Both
 // drawClimbScene() and the collision check build the on-screen box
@@ -364,12 +388,23 @@ function draw() {
     return;
   }
 
-  isMoving = false;
+   isMoving = false;
   let movingInput = keyIsDown(65) || keyIsDown(37) || keyIsDown(68) || keyIsDown(39);
   let goLeft  = flipped ? (keyIsDown(68)||keyIsDown(39)) : (keyIsDown(65)||keyIsDown(37));
   let goRight = flipped ? (keyIsDown(65)||keyIsDown(37)) : (keyIsDown(68)||keyIsDown(39));
-  if (goLeft)  { worldX -= WALK_SPEED; if (worldX<0) worldX=0; facingLeft=true;  isMoving=true; }
-  if (goRight) { worldX += WALK_SPEED; facingLeft=false; isMoving=true; }
+  // Holding S reveals the (otherwise invisible) platforms a little,
+  // at the cost of walking MUCH slower. Jump and left/right still
+  // work normally, just at reduced speed — collision never changes,
+  // only what gets drawn.
+  let revealHeld = keyIsDown(83);
+  let currentWalkSpeed = revealHeld ? WALK_SPEED * S_SPEED_MULTIPLIER : WALK_SPEED;
+  if (goLeft)  { worldX -= currentWalkSpeed; if (worldX<0) worldX=0; facingLeft=true;  isMoving=true; }
+  if (goRight) { worldX += currentWalkSpeed; facingLeft=false; isMoving=true; }
+
+  // Drives the platform fade below. Resets when clear of the climb
+  // zone so re-entering (e.g. after a fall back to base ground)
+  // shows the platforms fresh for another 4 seconds.
+  if (inClimbZone(worldX)) climbZoneTimer++; else climbZoneTimer = 0;
 
   if ((keyIsDown(32)||keyIsDown(87)||keyIsDown(38)) && onGround) {
     velY=JUMP_FORCE; onGround=false; standingPlatformIndex=-1;
@@ -424,7 +459,7 @@ function draw() {
   // surface this frame," we directly recompute where that specific
   // platform is right now and snap to it, exactly like standing on a
   // moving platform. If we've walked past its edge, let go and fall.
-  if (standingPlatformIndex !== -1) {
+   if (standingPlatformIndex !== -1) {
     let g = PLATFORM_GEOM[standingPlatformIndex];
     let scx = climbScreenX(g.cx);
     let scy = climbScreenY(g.cy);
@@ -435,9 +470,14 @@ function draw() {
     let topY = (scy - dh / 2) + dh * 0.12;
     let marginX = 10 * s;
     let withinX = charX > sx0 + marginX && charX < sx1 - marginX;
-    let nearSurface = charY <= topY + 8 && charY >= topY - 8;
+    // Compare the character's VISIBLE feet (charY + CHAR_DRAW_OFFSET),
+    // not raw charY — otherwise the sprite renders CHAR_DRAW_OFFSET
+    // pixels away from the surface it's supposedly standing on.
+    let visFeet = charY + CHAR_DRAW_OFFSET;
+    let nearSurface = visFeet <= topY + 8 && visFeet >= topY - 8;
     if (withinX && nearSurface && velY >= 0) {
-      charY = topY; velY = 0; onGround = true;
+      // Solve for the charY that puts the VISUAL feet exactly at topY.
+      charY = topY - CHAR_DRAW_OFFSET; velY = 0; onGround = true;
     } else {
       standingPlatformIndex = -1; // walked off the edge or jumped away
     }
@@ -456,11 +496,15 @@ function draw() {
       let sx0 = scx - dw / 2;
       let sx1 = scx + dw / 2;
       if (sx1 < -40 || sx0 > width+40) continue;
-      let topY = (scy - dh / 2) + dh * 0.12; // small inset from the rock's top silhouette
+     let topY = (scy - dh / 2) + dh * 0.12; // small inset from the rock's top silhouette
       let marginX = 10 * s;
       let withinX = charX > sx0 + marginX && charX < sx1 - marginX;
-      if (withinX && prevY <= topY && charY >= topY && velY > 0) {
-        charY = topY; velY = 0; onGround = true;
+      // Same visual-feet correction as Pass 1 — compare where the
+      // sprite will actually be drawn, not the raw physics charY.
+      let prevFeet = prevY + CHAR_DRAW_OFFSET;
+      let currFeet = charY + CHAR_DRAW_OFFSET;
+      if (withinX && prevFeet <= topY && currFeet >= topY && velY > 0) {
+        charY = topY - CHAR_DRAW_OFFSET; velY = 0; onGround = true;
         standingPlatformIndex = i;
         break;
       }
@@ -523,13 +567,29 @@ function draw() {
   translate(-charX, -groundY());
   drawBG();
   pop();
+  
+  // Fully visible for PLATFORM_VISIBLE_FRAMES after entering the climb
+// zone, then fades to invisible over PLATFORM_FADE_FRAMES. Platforms
+// stay fully solid/climbable the whole time — this only affects what
+// gets drawn. Holding S floors the opacity at PLATFORM_S_MIN_OPACITY
+// (speed cost is applied separately, above).
+function platformOpacity(revealHeld) {
+  let base;
+  if (climbZoneTimer < PLATFORM_VISIBLE_FRAMES) {
+    base = 1;
+  } else {
+    let t = (climbZoneTimer - PLATFORM_VISIBLE_FRAMES) / PLATFORM_FADE_FRAMES;
+    base = constrain(1 - t, 0, 1);
+  }
+  return revealHeld ? max(base, PLATFORM_S_MIN_OPACITY) : base;
+}
 
   // drawClimbScene() computes its own screen coordinates via
   // climbScreenX/Y, which already apply the same pivot + camZoom
   // math used above — so it lines up with drawBG() without needing
   // a second canvas transform, and stays in sync with the collision
   // code (which calls the same two functions).
-  drawClimbScene();
+   drawClimbScene(platformOpacity(revealHeld));
   drawDebugPlatformBoxes(); // no-op unless DEBUG_COLLISION is toggled on ('P')
 
   // drawChar() is intentionally OUTSIDE any zoom transform — the
@@ -658,7 +718,7 @@ function drawBG() {
 }
 
 // ─────────────────────────────────────────────────────────
-function drawClimbScene() {
+function drawClimbScene(opacity) {
   if (!imgWaterfall || !imgPlatforms) return; // guard against a failed load
 
   let s = climbScale();
@@ -697,7 +757,7 @@ function drawClimbScene() {
   // from the same center-based geometry (PLATFORM_GEOM) the
   // collision check uses above — so the drawn rock and the box you
   // can actually stand on are always identical in size and position.
-  for (let g of PLATFORM_GEOM) {
+   for (let g of PLATFORM_GEOM) {
     let scx = climbScreenX(g.cx);
     let scy = climbScreenY(g.cy);
     let dw  = g.w * platformScale;
@@ -899,6 +959,7 @@ function keyPressed() {
     charX=width*0.25; charY=groundY();
     hasClimbed=false;
     standingPlatformIndex=-1;
+    climbZoneTimer=0;
     camZoom=1; zoomedOut=false; camPanY=0;
     if (sndMusic && sndMusic.isLoaded()) { sndMusic.stop(); sndMusic.loop(); }
   }
