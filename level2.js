@@ -145,11 +145,11 @@ const SPREAD_FACTOR_Y = 2.0;
 const PLATFORM_Y_OFFSET = -90;
 
 // ── platform visibility / fade mechanic ─────────────────────
-const PLATFORM_VISIBLE_FRAMES = 4 * 60;  // fully visible for 4 seconds after entering the climb zone
+const PLATFORM_VISIBLE_FRAMES = 4 * 60;  // fully visible for 4 seconds after the camera zooms out
 const PLATFORM_FADE_FRAMES    = 30;      // then fades out over this many frames
-const PLATFORM_S_MIN_OPACITY  = 0.2;     // opacity floor while holding S
+const PLATFORM_S_OPACITY_BOOST = 0.2;    // opacity added back while holding S
 const S_SPEED_MULTIPLIER      = 0.15;    // walk speed while holding S (fraction of WALK_SPEED) — "A LOT" slower
-let climbZoneTimer = 0; // frames spent in the climb zone this "life" — drives the fade
+let zoomOutTimer = 0; // frames since the camera finished zooming out — drives the fade
 
 function computeSpreadBoxes(boxes, factorX, factorY) {
   let cx = 0, cy = 0;
@@ -408,7 +408,7 @@ function draw() {
   // Drives the platform fade below. Resets when clear of the climb
   // zone so re-entering (e.g. after a fall back to base ground)
   // shows the platforms fresh for another 4 seconds.
-  if (inClimbZone(worldX)) climbZoneTimer++; else climbZoneTimer = 0;
+ 
 
   if ((keyIsDown(32)||keyIsDown(87)||keyIsDown(38)) && onGround) {
     velY=JUMP_FORCE; onGround=false; standingPlatformIndex=-1;
@@ -446,6 +446,10 @@ function draw() {
   // perfectly in sync every frame.
   updateZoom();
   updateVerticalCamera();
+
+  // Drives the platform fade — starts counting only once the camera
+  // has actually finished latching into its zoomed-out state.
+  if (zoomedOut) zoomOutTimer++; else zoomOutTimer = 0;
 
   let gy = groundY();
 
@@ -708,13 +712,13 @@ function drawBG() {
 
 function platformOpacity(revealHeld) {
   let base;
-  if (climbZoneTimer < PLATFORM_VISIBLE_FRAMES) {
+  if (zoomOutTimer < PLATFORM_VISIBLE_FRAMES) {
     base = 1;
   } else {
-    let t = (climbZoneTimer - PLATFORM_VISIBLE_FRAMES) / PLATFORM_FADE_FRAMES;
+    let t = (zoomOutTimer - PLATFORM_VISIBLE_FRAMES) / PLATFORM_FADE_FRAMES;
     base = constrain(1 - t, 0, 1);
   }
-  return revealHeld ? max(base, PLATFORM_S_MIN_OPACITY) : base;
+  return revealHeld ? constrain(base + PLATFORM_S_OPACITY_BOOST, 0, 1) : base;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -757,7 +761,10 @@ function drawClimbScene(opacity) {
   // from the same center-based geometry (PLATFORM_GEOM) the
   // collision check uses above — so the drawn rock and the box you
   // can actually stand on are always identical in size and position.
-   for (let g of PLATFORM_GEOM) {
+ // Platforms fade independently of the waterfall — tint only applies
+  // to this loop, not the waterfall drawn above it.
+  tint(255, opacity * 255);
+  for (let g of PLATFORM_GEOM) {
     let scx = climbScreenX(g.cx);
     let scy = climbScreenY(g.cy);
     let dw  = g.w * platformScale;
@@ -767,6 +774,7 @@ function drawClimbScene(opacity) {
     if (dx0 > width+50 || dx0+dw < -50) continue;
     image(imgPlatforms, dx0, dy0, dw, dh, g.srcX, g.srcY, g.w, g.h);
   }
+  noTint();
   imageMode(CENTER);
 }
 
@@ -960,7 +968,7 @@ function keyPressed() {
     charX=width*0.25; charY=groundY();
     hasClimbed=false;
     standingPlatformIndex=-1;
-    climbZoneTimer=0;
+    zoomOutTimer=0;
     camZoom=1; zoomedOut=false; camPanY=0;
     if (sndMusic && sndMusic.isLoaded()) { sndMusic.stop(); sndMusic.loop(); }
   }
