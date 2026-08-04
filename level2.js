@@ -97,15 +97,15 @@ const MOUNTAIN_SCALE = 1.15;
 // 2.8 so the whole cliff/waterfall reads as much taller — combined
 // with the vertical camera follow below, there's now a lot more
 // climb to show as the player goes up.
-const WATERFALL_DRAW_SCALE = 1.2;
-const PLATFORM_DRAW_SCALE = 1.1;
+const WATERFALL_DRAW_SCALE = 1.8;
+const PLATFORM_DRAW_SCALE = 1.2;
 
 // How far to shift waterfall.png upward on screen (canvas-space
 // pixels, before scaling) — the image was sitting low enough that
 // its top got clipped by the viewport. Increase to push it further
 // up; this is applied in drawClimbScene() scaled by the current
 // climbScale() so it stays in the right spot at any zoom level.
-const WATERFALL_Y_SHIFT = 260;
+const WATERFALL_Y_SHIFT = 120;
 
 // bounding boxes (in canvas pixels) of each of the 20 stone
 // platforms baked into platforms.png, extracted directly from the
@@ -119,13 +119,34 @@ const WATERFALL_Y_SHIFT = 260;
 // proud of the rock face rather than flush in it — an intentional
 // trade-off for the extra spacing.
 const PLATFORM_SRC_BOXES = [
-  [1034,830,1213,930],  [1114,1162,1293,1262], [1121,974,1299,1038],
+  [1034,830,1213,930],  [1121,974,1299,1038],
   [1179,615,1358,715],  [1302,809,1480,873],   [1305,909,1484,1009],
-  [1358,210,1537,310],  [1363,507,1541,572],   [1364,1098,1542,1163],
-  [1419,1182,1598,1282],[1476,590,1655,690],   [1518,377,1697,477],
+  [1358,210,1537,310],  [1363,507,1541,572], 
+  [1476,590,1655,690],   [1518,377,1697,477],
   [1519,968,1698,1068], [1520,54,1698,118],    [1574,293,1752,358],
   [1575,884,1753,949],  [1689,512,1868,612],   [1690,1103,1869,1203],
-  [1700,154,1879,254],  [1701,745,1880,845],
+  [1700,154,1879,254],  [1701,745,1880,845], 
+];
+
+// ── 4 extra platforms for the bottom-left corner ────────────
+// platforms.png has NO rock art further left than ~x=1030 — the
+// left half of the sheet is blank. So these reuse real crop rects
+// from existing rocks (for actual pixel art), but are placed at
+// EXPLICIT final canvas positions below, bypassing the rank-based
+// computeSpreadBoxes() layout entirely — that keeps them from
+// shifting the existing 17 platforms (adding them into the shared
+// mean/rank computation would perturb everyone else's position).
+const EXTRA_PLATFORM_SRC_BOXES = [
+  [1034,830,1213,930],  // reused crop
+  [1358,210,1537,310],  // reused crop
+  [1520,54,1698,118],   // reused crop
+  [1701,745,1880,845],  // reused crop
+];
+const EXTRA_PLATFORM_FINAL_CENTERS = [
+  [920, 200], // moved up ~150px
+  [1000, 700],
+  [680, 600],
+  [600, 880],
 ];
 
 // How much further apart (relative to the group's own center) each
@@ -140,9 +161,7 @@ const PLATFORM_SRC_BOXES = [
 // safe (and desired, for a taller climb with clearer separate
 // jumps) since the tall cliff face behind them covers the whole
 // climb regardless of how far up/down a given rock sits.
-const SPREAD_FACTOR_X = 1.08;
-const SPREAD_FACTOR_Y = 2.0;
-const PLATFORM_Y_OFFSET = -90;
+const SPREAD_FACTOR_X = 1.78;
 
 // ── platform visibility / fade mechanic ─────────────────────
 const PLATFORM_VISIBLE_FRAMES = 4 * 60;  // fully visible for 4 seconds after the camera zooms out
@@ -151,25 +170,49 @@ const PLATFORM_S_OPACITY_BOOST = 0.2;    // opacity added back while holding S
 const S_SPEED_MULTIPLIER      = 0.15;    // walk speed while holding S (fraction of WALK_SPEED) — "A LOT" slower
 let zoomOutTimer = 0; // frames since the camera finished zooming out — drives the fade
 
-function computeSpreadBoxes(boxes, factorX, factorY) {
-  let cx = 0, cy = 0;
-  for (let b of boxes) { cx += (b[0] + b[2]) / 2; cy += (b[1] + b[3]) / 2; }
-  cx /= boxes.length; cy /= boxes.length;
-  return boxes.map(b => {
+// Instead of spreading platforms outward from their group's average
+// height (which caused several low-starting platforms to overshoot
+// past the ground and all get clamped onto the same line), directly
+// remap each platform's ORIGINAL vertical rank onto an explicit
+// target span — from CLIMB_TOP_CANVAS_Y above the ground down to
+// just above GROUND_TOP_CANVAS_Y. The platform that started highest
+// in the source art ends up highest here; the one that started
+// lowest ends up lowest — evenly distributed, guaranteed no overlap,
+// no clamping required.
+const CLIMB_TOP_CANVAS_Y = 1900; // how far above the ground line the highest platform sits (canvas px, pre-scale)
+
+const MIN_LOWEST_CLEARANCE = 220; // canvas px — lowest platform sits at LEAST this far above the fail line
+
+function computeSpreadBoxes(boxes, factorX) {
+  let cx = 0;
+  for (let b of boxes) cx += (b[0] + b[2]) / 2;
+  cx /= boxes.length;
+
+  let cys = boxes.map(b => (b[1] + b[3]) / 2);
+  let minCy = Math.min(...cys);
+  let maxCy = Math.max(...cys);
+
+  return boxes.map((b, i) => {
     let w = b[2] - b[0], h = b[3] - b[1];
-    let ctrX = (b[0] + b[2]) / 2, ctrY = (b[1] + b[3]) / 2;
+    let ctrX = (b[0] + b[2]) / 2;
     let nCtrX = cx + (ctrX - cx) * factorX;
-    let nCtrY = cy + (ctrY - cy) * factorY + PLATFORM_Y_OFFSET;
+
+    let t = (cys[i] - minCy) / (maxCy - minCy);
+    // reserve MIN_LOWEST_CLEARANCE off the bottom of the range so
+    // t=1 no longer lands right on the fail line
+    let usableSpan = CLIMB_TOP_CANVAS_Y - MIN_LOWEST_CLEARANCE;
+    let nCtrY = GROUND_TOP_CANVAS_Y - PLATFORM_GROUND_MARGIN - MIN_LOWEST_CLEARANCE - t * usableSpan;
+
     return [nCtrX - w / 2, nCtrY - h / 2, nCtrX + w / 2, nCtrY + h / 2];
   });
 }
 
 // The boxes actually used for physics + on-screen placement.
-const PLATFORM_GROUND_MARGIN = 20; // canvas px of breathing room above the ground line
+const PLATFORM_GROUND_MARGIN = 60; // canvas px of breathing room above the ground line
 function clampAboveGround(boxes, srcBoxes) {
   return boxes.map((b, i) => {
     let srcH = srcBoxes[i][3] - srcBoxes[i][1];
-    let halfH = (srcH * PLATFORM_DRAW_SCALE) / 2;
+    let halfH = srcH / 2;
     let h = b[3] - b[1];
     let cy = (b[1] + b[3]) / 2;
     let maxCy = GROUND_TOP_CANVAS_Y - halfH - PLATFORM_GROUND_MARGIN;
@@ -180,19 +223,23 @@ function clampAboveGround(boxes, srcBoxes) {
 
 // The boxes actually used for physics + on-screen placement.
 const PLATFORM_BOXES = clampAboveGround(
-  computeSpreadBoxes(PLATFORM_SRC_BOXES, SPREAD_FACTOR_X, SPREAD_FACTOR_Y),
+  computeSpreadBoxes(PLATFORM_SRC_BOXES, SPREAD_FACTOR_X),
   PLATFORM_SRC_BOXES
+).concat(
+  // Extras use their explicit center directly — no spread or clamp
+  // needed, since these positions were already chosen with ground
+  // clearance built in.
+  EXTRA_PLATFORM_FINAL_CENTERS.map(([cx, cy], i) => {
+    let src = EXTRA_PLATFORM_SRC_BOXES[i];
+    let w = src[2] - src[0], h = src[3] - src[1];
+    return [cx - w/2, cy - h/2, cx + w/2, cy + h/2];
+  })
 );
 
-// Precomputed per-platform center + size in canvas space. Both
-// drawClimbScene() and the collision check build the on-screen box
-// from these same numbers (center + PLATFORM_DRAW_SCALE), so the
-// rock you can stand on is always exactly the rock that's drawn.
-// Previously the drawn sprite was scaled up by PLATFORM_DRAW_SCALE
-// but the collision box wasn't, so the visible rock and the
-// standable area didn't line up — that's fixed here.
+const ALL_PLATFORM_SRC_BOXES = PLATFORM_SRC_BOXES.concat(EXTRA_PLATFORM_SRC_BOXES);
+
 const PLATFORM_GEOM = PLATFORM_BOXES.map((b, i) => {
-  const src = PLATFORM_SRC_BOXES[i];
+  const src = ALL_PLATFORM_SRC_BOXES[i]; // was PLATFORM_SRC_BOXES[i]
   return {
     cx: (b[0] + b[2]) / 2,
     cy: (b[1] + b[3]) / 2,
@@ -259,7 +306,7 @@ function climbScreenY(cy) {
 let camZoom      = 1;
 let zoomedOut    = false;
 const ZOOM_TRIGGER = CLIMB_ZONE_START - 900; // start easing out a bit before the cliff
-const ZOOM_TARGET  = 0.72;                   // final "pulled back" zoom level
+const ZOOM_TARGET  = 0.85;                   // final "pulled back" zoom level
 const ZOOM_SPEED   = 0.015;                  // easing rate per frame toward target
 
 function updateZoom() {
@@ -378,6 +425,8 @@ function windowResized() {
 
 // ─────────────────────────────────────────────────────────
 function draw() {
+clear();
+
   startAudioOnce();
 
   if (gameWon)  { drawWinScreen();  return; }
@@ -560,39 +609,21 @@ function draw() {
   // existing horizontal/zoom transforms, so it stays independent of
   // them. Physics (charY, climbScreenY, etc.) is untouched by this;
   // only what gets drawn moves.
-  push();
-  translate(0, -camPanY);
+ // Background is drawn OUTSIDE the camPanY translate — it should
+// never pan with the vertical climb, only zoom about the pivot.
+drawBG();
 
-  // Background & cliff shrink toward the character's fixed ground
-  // point as the camera pulls back — this is what makes the cliff
-  // read as a much bigger formation without the character itself
-  // shrinking. The pivot is (charX, groundY()): the spot the player
-  // is standing on right before the zoom starts, so nothing appears
-  // to slide out from under their feet as the scale changes.
-  push();
-  translate(charX, groundY());
-  scale(camZoom);
-  translate(-charX, -groundY());
-  drawBG();
-  pop();
-  
+// Climb scene (waterfall/platforms) and character DO pan with
+// camPanY as the character climbs higher up the cliff.
+push();
+translate(0, -camPanY);
 
-  // drawClimbScene() computes its own screen coordinates via
-  // climbScreenX/Y, which already apply the same pivot + camZoom
-  // math used above — so it lines up with drawBG() without needing
-  // a second canvas transform, and stays in sync with the collision
-  // code (which calls the same two functions).
-   drawClimbScene(platformOpacity(revealHeld));
-  drawDebugPlatformBoxes(); // no-op unless DEBUG_COLLISION is toggled on ('P')
+drawClimbScene(platformOpacity(revealHeld));
+drawDebugPlatformBoxes(); // no-op unless DEBUG_COLLISION is toggled on ('P')
+drawChar();
 
-  // drawChar() is intentionally OUTSIDE any zoom transform — the
-  // character stays the same size and screen position while the
-  // world around it shrinks, which sells the "the mountain is huge"
-  // effect the player is walking up to. It still moves with the
-  // vertical pan above, though, so it stays visible while climbing.
-  drawChar();
+pop();
 
-  pop();
 
   drawHUD();
   drawFlipHUD();
@@ -662,12 +693,16 @@ function drawBG() {
     skyBot = lerpColor(color(135,115,130), color(55,48,65), t);
   }
 
-  noStroke();
-  for (let i = 0; i <= height; i++) {
-    stroke(lerpColor(skyTop, skyBot, i/height));
-    line(0, i, width, i);
-  }
-  noStroke();
+function drawSkyGradient(skyTop, skyBot) {
+  let ctx = drawingContext; // p5's underlying 2D context
+  let grad = ctx.createLinearGradient(0, 0, 0, height);
+  grad.addColorStop(0, skyTop.toString());
+  grad.addColorStop(1, skyBot.toString());
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, width, height);
+}
+
+ drawSkyGradient(skyTop, skyBot);
 
   let sunAngle = PI + progress * PI;
   let sunCx    = width*0.5 + cos(sunAngle)*width*0.38;
@@ -695,6 +730,7 @@ function drawBG() {
   // Scroll rate increases the "closer" a layer is meant to be, so
   // distant peaks crawl by while the ground rushes past underfoot —
   // that speed difference is what reads as depth.
+
   tileLayer(imgDistant, height, -290, worldX*SCROLL_DISTANT, FARMOUNT_GROWTH);
   tileLayer(imgCloser,  height, -220, worldX*SCROLL_CLOSER,  CLOSEMOUNT_GROWTH);
   // Ground is drawn first so the trees layer renders in front of it.
@@ -702,12 +738,9 @@ function drawBG() {
   // anchored to the bottom of the screen — reveals a much taller
   // strip of each, matching the reference screenshot proportions,
   // with the growth pushing their visible top edge further up.
-  tileLayer(imgGround,  height, 0, worldX*SCROLL_GROUND, GROUND_GROWTH, true);
-  // Trees use the SAME scroll rate as the ground (SCROLL_GROUND, not
-  // their own) — they're rooted in it, so they need to move with it
-  // in lockstep or they visually slide along the dirt instead of
-  // standing still relative to it.
+    tileLayer(imgGround, height, 0, worldX*SCROLL_GROUND, GROUND_GROWTH, true);
   tileLayer(imgTrees,   height, -210, worldX*SCROLL_GROUND, TREES_GROWTH,  true);
+ 
 }
 
 function platformOpacity(revealHeld) {
@@ -746,16 +779,29 @@ function drawClimbScene(opacity) {
   // into view before the enlarged cliff texture caught up to the
   // same spot. Expanding symmetrically about the crop's center
   // keeps it lined up with the platforms at any WATERFALL_DRAW_SCALE.
-  let cropX = 608, cropW = CANVAS_W - cropX;
-  let cropCenterCanvasX = cropX + cropW / 2;
+// Use the image's ACTUAL pixel size for the source crop, instead of
+  // assuming it matches the 1901x1528 design canvas — if the real
+  // file's dimensions differ even slightly, sampling with hardcoded
+  // canvas numbers pulls the wrong pixels and reads as stretching.
+  let srcW = imgWaterfall.width;
+  let srcH = imgWaterfall.height;
+  let cropXReal = (520 / CANVAS_W) * srcW;      // same proportional crop, scaled to actual size
+  let cropWReal = srcW - cropXReal;
+
+  let cropCenterCanvasX = 608 + (CANVAS_W - 608) / 2;
   let cropCenterCanvasY = CANVAS_H / 2;
   let waterfallCenterX = climbScreenX(cropCenterCanvasX);
   let waterfallCenterY = climbScreenY(cropCenterCanvasY) - WATERFALL_Y_SHIFT * s;
-  let waterfallW = cropW * waterfallScale;
+
+  // Destination size still driven by the design-canvas proportions
+  // (so it lines up with platforms/collision), but built from the
+  // real source aspect ratio so nothing distorts.
+  let waterfallW = (cropWReal / srcW) * CANVAS_W * waterfallScale;
   let waterfallH = CANVAS_H * waterfallScale;
   let waterfallDX = waterfallCenterX - waterfallW / 2;
   let waterfallDY = waterfallCenterY - waterfallH / 2;
-  image(imgWaterfall, waterfallDX, waterfallDY, waterfallW, waterfallH, cropX, 0, cropW, CANVAS_H);
+
+  image(imgWaterfall, waterfallDX, waterfallDY, waterfallW, waterfallH, cropXReal, 0, cropWReal, srcH);
 
   // Each stone ledge is drawn as its own cropped sprite, positioned
   // from the same center-based geometry (PLATFORM_GEOM) the
@@ -782,7 +828,7 @@ function drawClimbScene(opacity) {
 function drawChar() {
   if (!imgSprites) return; // guard against a failed load
 
-  let dispH=height*0.20, dispW=dispH*(119/135);
+  let dispH=height*0.20*camZoom, dispW=dispH*(119/135);
   let drawX=charX-dispW/2, drawY=charY-dispH + CHAR_DRAW_OFFSET;
   imageMode(CORNER);
   push();
