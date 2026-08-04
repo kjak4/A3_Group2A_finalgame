@@ -4,7 +4,15 @@
 
 let imgSky, imgBgTrees, imgBushes, imgGround, imgFgTrees;
 let imgSprites, imgLog, imgRock, imgRacoon, imgRabbit;
-let imgSign, imgPlatform, imgPlatform2, imgSpikes, imgFinishSign;
+let imgSign, imgPlatform, imgPlatform2, imgFloatingPlat, imgFinishSign;
+let imgTitleScreen;
+
+// ── Title screen state ─────────────────────────────────────
+// Shown before anything else. The player clicks "Start Game" to
+// move on to the existing Tutorial/intro overlay and then gameplay.
+let showTitleScreen = true;
+let startBtn = { x:0, y:0, w:0, h:0 }; // recomputed every frame, used for click hit-testing
+let titleImgRect = { x:0, y:0, w:0, h:0 }; // where the letterboxed art actually sits on screen
 
 // ── Sound variables ────────────────────────────────────────
 let sndMusic, sndJump, sndDamage, sndWin, sndWalk;
@@ -60,6 +68,7 @@ const WALK_SPEED = 4;
 
 let worldX      = 0;
 const LEVEL_END = 8500;
+const FINISH_SIGN_X = LEVEL_END - 150; // world position of the "you made it" sign — win triggers here, not at LEVEL_END
 let gameWon     = false;
 let gameLost    = false;
 
@@ -125,8 +134,9 @@ function preload() {
   imgSign      = loadImage('assets/images/sign.png');
   imgPlatform  = loadImage('assets/images/platform.png');
   imgPlatform2 = loadImage('assets/images/platform2.png');
-  imgSpikes    = loadImage('assets/images/spikes.png');
+  imgFloatingPlat = loadImage('assets/images/floatingplat.png');
   imgFinishSign= loadImage('assets/images/youmadeit.png');
+  imgTitleScreen = loadImage('assets/images/titlescreen.PNG');
 
   // NOTE: sounds are deliberately NOT loaded here. p5.sound's preload
   // tracking does not reliably resolve on a failed/missing file even
@@ -153,6 +163,8 @@ function windowResized() {
 
 // ─────────────────────────────────────────────────────────
 function draw() {
+  if (showTitleScreen) { drawTitleScreen(); return; }
+
   startAudioOnce();
 
   if (gameWon)  { drawWinScreen();  return; }
@@ -221,14 +233,13 @@ function draw() {
     a.ft++; if (a.ft>=8) { a.ft=0; a.frame=(a.frame+1)%2; }
   }
 
-  if (worldX >= LEVEL_END) {
+  if (worldX + width*0.25 >= FINISH_SIGN_X) {
     gameWon=true;
     if (sndWin && sndWin.isLoaded()) sndWin.play();
     if (sndMusic && sndMusic.isLoaded()) sndMusic.stop(); sndMusic.setVolume(0.01);
     return;
   }
   levelTimer++;
-  if (levelTimer >= TIME_LIMIT) { gameLost=true; if (sndMusic && sndMusic.isLoaded()) sndMusic.stop(); sndMusic.setVolume(0.01);return; }
   if (invTimer > 0) invTimer--;
   else checkDamage();
 
@@ -270,7 +281,7 @@ function tileLayer(img, destH, destY, scrollAmt) {
 
 function drawBG() {
   let bgScroll = min(worldX, LEVEL_END - 800);
-  let progress = levelTimer / TIME_LIMIT;
+  let progress = min(levelTimer / TIME_LIMIT, 1);
 
   let skyTop, skyBot;
   if (progress < 0.35) {
@@ -328,25 +339,75 @@ function drawPit() {
   let pitW = pex - psx;
   if (pex < -10 || psx > width+10) return;
 
-  noStroke(); fill(14,9,6);
-  rect(psx, gy, pitW, height-gy);
-  fill(38,22,10);
-  rect(psx-6, gy, 10, height*0.14);
-  rect(pex-4, gy, 10, height*0.14);
+  let pitBottom = height;
+  let pitDepth  = pitBottom - gy;
 
-  if (imgSpikes) {
-    let srcW=1188, srcH=831;
-    let spikeH=height*0.18, spikeW=spikeH*(srcW/srcH);
-    let n=ceil(pitW/spikeW)+1;
-    imageMode(CORNER);
-    for (let i=0;i<n;i++) {
-      let dx=psx+i*spikeW;
-      if (dx>pex) break;
-      image(imgSpikes,dx,gy,spikeW,spikeH,165,168,srcW,srcH);
-    }
+  // ── jagged "torn earth" opening ──────────────────────────
+  // noise() is deterministic for a given input, so this jitter is
+  // fixed per position rather than per-frame — the broken edge holds
+  // still instead of flickering, matching the slightly irregular
+  // hand-drawn linework used elsewhere (tree trunks, sign post).
+  let jagN = 16;
+  let topPts = [];
+  for (let i=0;i<=jagN;i++) {
+    let t  = i/jagN;
+    let jx = psx + pitW*t;
+    let jy = gy + (noise(i*0.6, 4.2) - 0.5) * height*0.035;
+    topPts.push([jx, jy]);
   }
 
-  noStroke(); fill(155,115,45,180);
+  // ── pit body: flat dusty-brown fill, darkening toward the ──
+  // bottom in solid bands rather than a smooth gradient — the
+  // reference art is flat/cel-shaded, not painterly.
+  noStroke();
+  fill(60, 44, 30);
+  beginShape();
+  for (let pt of topPts) vertex(pt[0], pt[1]);
+  vertex(pex, pitBottom);
+  vertex(psx, pitBottom);
+  endShape(CLOSE);
+
+  fill(34, 23, 15);
+  rect(psx, gy + pitDepth*0.4, pitW, pitDepth*0.6);
+
+  fill(16, 11, 7);
+  rect(psx, gy + pitDepth*0.75, pitW, pitDepth*0.25);
+
+  // ── bold black outline along the torn edge and down each ──
+  // side wall — the reference art outlines every shape heavily,
+  // so the pit needs the same treatment to read as part of the
+  // same world.
+  stroke(8, 6, 5); strokeWeight(4);
+  noFill();
+  beginShape();
+  for (let pt of topPts) vertex(pt[0], pt[1]);
+  endShape();
+  line(psx, topPts[0][1], psx, pitBottom);
+  line(pex, topPts[topPts.length-1][1], pex, pitBottom);
+  noStroke();
+
+  // ── thin dangling roots at the broken lip, silhouetted the ──
+  // same near-black as the trees for visual consistency
+  fill(15, 20, 16);
+  for (let i=2;i<topPts.length-2;i+=3) {
+    let rx = topPts[i][0], ry = topPts[i][1];
+    let rl = height*0.018 + noise(i*1.3, 9.1)*height*0.022;
+    beginShape();
+    vertex(rx-3, ry);
+    vertex(rx+3, ry);
+    vertex(rx+1, ry+rl);
+    vertex(rx-1, ry+rl);
+    endShape(CLOSE);
+  }
+
+  // ── loose dirt clumps scattered along the rim ────────────
+  fill(80, 60, 40);
+  for (let i=0;i<topPts.length-1;i+=2) {
+    let cx = topPts[i][0], cy = topPts[i][1];
+    ellipse(cx + 10, cy - 4, 16, 9);
+  }
+
+  fill(155,115,45,180);
   textAlign(CENTER,CENTER); textFont('monospace'); textStyle(BOLD);
   textSize(height*0.020);
   text('!', psx-25, groundY()-height*0.06);
@@ -356,14 +417,22 @@ function drawPit() {
 
 // ─────────────────────────────────────────────────────────
 function drawPlatforms() {
-  let srcX2=3, srcY2=148, srcW2=148, srcH2=229;
+  // floatingplat.png is a standalone 291x194 image (not a spritesheet
+  // crop like platform2.png was). We draw it a bit larger than the
+  // PLAT_W landing hitbox for visual presence, but the extra size is
+  // centered on the hitbox (and only grows downward, not upward) so
+  // the actual walkable surface — where the player's feet land — still
+  // sits exactly at platY(p), and jump/landing detection is unchanged.
+  let PLAT_VISUAL_SCALE = 1.25;
+  let plW = PLAT_W * PLAT_VISUAL_SCALE;
+  let plH = plW * (194 / 291);
+  let xOffset = (plW - PLAT_W) / 2; // extra width split evenly left/right
   imageMode(CORNER);
   for (let p of PLATFORMS) {
-    let sx=toScreen(p.wx);
-    let py=platY(p);
-    if (sx < -PLAT_W-20 || sx > width+20) continue;
-    let ih=groundY()-py+PLAT_H;
-    image(imgPlatform2, sx, py, PLAT_W, ih, srcX2, srcY2, srcW2, srcH2);
+    let sx = toScreen(p.wx);
+    let py = platY(p);
+    if (sx < -PLAT_W-40 || sx > width+40) continue;
+    image(imgFloatingPlat, sx - xOffset, py, plW, plH);
   }
   imageMode(CENTER);
 }
@@ -417,7 +486,7 @@ function drawStartSign() {
 
 // ─────────────────────────────────────────────────────────
 function drawFinishSign() {
-  let sx=toScreen(LEVEL_END-150), gy=groundY();
+  let sx=toScreen(FINISH_SIGN_X), gy=groundY();
   if (sx<-300||sx>width+300) return;
   let dh=height*0.28, dw=dh*(300/400);
   imageMode(CORNER);
@@ -477,21 +546,7 @@ function drawHUD() {
   let pad=width*0.018, hs=height*0.038;
   for (let i=0;i<MAX_HP;i++) drawPixelHeart(pad+i*(hs*1.4), pad, hs, i<hp);
 
-  let timeLeft=max(0,TIME_LIMIT-levelTimer), pct=timeLeft/TIME_LIMIT;
-  let barW=width*0.18, barH=height*0.018;
-  let bx=width-barW-pad, by=pad;
-  noStroke(); fill(20,30,18,180); rect(bx-2,by-2,barW+4,barH+4,3);
-  let bc=pct>0.5?lerpColor(color(180,210,80),color(220,180,40),map(pct,1,0.5,0,1))
-        :pct>0.2?lerpColor(color(220,180,40),color(210,80,40),map(pct,0.5,0.2,0,1))
-        :color(210,60,40);
-  fill(bc); rect(bx,by,barW*pct,barH,2);
-  stroke(20,30,18,120); strokeWeight(1);
-  for (let t=1;t<6;t++) { let tx=bx+barW*(t/6); line(tx,by,tx,by+barH); }
-  noStroke();
-  fill(190,215,160); textFont('monospace'); textStyle(BOLD); textSize(height*0.016);
-  textAlign(RIGHT,TOP); text('TIME',width-pad,by+barH+3); textStyle(NORMAL);
-
-  let progress=levelTimer/TIME_LIMIT;
+  let progress=min(levelTimer/TIME_LIMIT, 1);
   if (progress>0.82) {
     let a=map(progress,0.82,1.0,0,200);
     fill(200,185,215,a);
@@ -572,6 +627,71 @@ function drawFlipHUD() {
 }
 
 // ─────────────────────────────────────────────────────────
+function drawTitleScreen() {
+  // Fill the full canvas first — this becomes the letterbox/pillarbox
+  // bar color if the artwork's 3:2 ratio doesn't match the browser
+  // window's ratio, instead of stretching the art to fill the screen.
+  background(18, 12, 26);
+
+  if (imgTitleScreen && imgTitleScreen.width > 0) {
+    let imgAspect    = imgTitleScreen.width / imgTitleScreen.height; // 1800/1200 = 1.5
+    let canvasAspect = width / height;
+    let dw, dh, dx, dy;
+
+    if (canvasAspect > imgAspect) {
+      // window is relatively wider than the art -> fit to full height,
+      // letterbox (bars) appear on the left/right
+      dh = height;
+      dw = dh * imgAspect;
+      dx = (width - dw) / 2;
+      dy = 0;
+    } else {
+      // window is relatively taller/narrower than the art -> fit to
+      // full width, letterbox (bars) appear on the top/bottom
+      dw = width;
+      dh = dw / imgAspect;
+      dx = 0;
+      dy = (height - dh) / 2;
+    }
+
+    imageMode(CORNER);
+    image(imgTitleScreen, dx, dy, dw, dh);
+    titleImgRect.x = dx; titleImgRect.y = dy; titleImgRect.w = dw; titleImgRect.h = dh;
+  } else {
+    // no image yet (still loading) — fall back to the full canvas so
+    // the button still has somewhere sensible to sit
+    titleImgRect.x = 0; titleImgRect.y = 0; titleImgRect.w = width; titleImgRect.h = height;
+  }
+
+  drawStartButton();
+}
+
+function drawStartButton() {
+  let bw = min(titleImgRect.w*0.20, 260);
+  let bh = min(titleImgRect.h*0.085, 70);
+  let bx = titleImgRect.x + titleImgRect.w - bw - titleImgRect.w*0.035;
+  let by = titleImgRect.y + titleImgRect.h - bh - titleImgRect.h*0.05;
+  startBtn.x = bx; startBtn.y = by; startBtn.w = bw; startBtn.h = bh;
+
+  // soft pulsing glow ring to signal "this is clickable"
+  if (floor(frameCount/20)%2===0) {
+    noFill(); stroke(200,230,160,120); strokeWeight(3);
+    rect(bx-5, by-5, bw+10, bh+10, bh/2+5); noStroke();
+  }
+
+  noStroke(); fill(0,0,0,120); rect(bx+3, by+3, bw, bh, bh/2);
+  fill(32,48,28,235); rect(bx, by, bw, bh, bh/2);
+  stroke(140,190,100,220); strokeWeight(2); noFill();
+  rect(bx+2, by+2, bw-4, bh-4, (bh-4)/2); noStroke();
+
+  fill(225,240,200);
+  textAlign(CENTER,CENTER); textFont('Georgia'); textStyle(BOLD);
+  textSize(bh*0.34);
+  text('Start Game', bx+bw/2, by+bh/2);
+  textStyle(NORMAL);
+}
+
+// ─────────────────────────────────────────────────────────
 function drawIntroOverlay() {
   let alpha = introTimer <= INTRO_FADE_FRAMES
     ? constrain(map(introTimer, INTRO_FADE_FRAMES, 0, 220, 0), 0, 220)
@@ -613,8 +733,7 @@ function drawLoseScreen() {
   textStyle(NORMAL); textSize(height*0.022); fill(140,168,115);
   text('she never made it home.',cx,cy+2);
   textSize(height*0.018); fill(100,130,80);
-  let reason=levelTimer>=TIME_LIMIT?'the forest swallowed the last of the light.':'the cold crept in.';
-  text(reason,cx,cy+30);
+  text('the cold crept in.',cx,cy+30);
   if (floor(frameCount/30)%2===0) { textSize(height*0.019); fill(160,190,130); text('press SPACE to try again',cx,cy+68); }
   textStyle(NORMAL);
 }
@@ -663,4 +782,10 @@ function keyPressed() {
 // unlocking gesture, not a keypress — cover both.
 function mousePressed() {
   startAudioOnce();
+
+  if (showTitleScreen) {
+    let inBtn = mouseX > startBtn.x && mouseX < startBtn.x + startBtn.w
+             && mouseY > startBtn.y && mouseY < startBtn.y + startBtn.h;
+    if (inBtn) showTitleScreen = false;
+  }
 }
