@@ -12,6 +12,7 @@ let imgTitleScreen;
 // move on to the existing Tutorial/intro overlay and then gameplay.
 let showTitleScreen = true;
 let startBtn = { x:0, y:0, w:0, h:0 }; // recomputed every frame, used for click hit-testing
+let nextLevelBtn = { x:0, y:0, w:0, h:0 };
 let titleImgRect = { x:0, y:0, w:0, h:0 }; // where the letterboxed art actually sits on screen
 
 // ── Sound variables ────────────────────────────────────────
@@ -666,6 +667,29 @@ function drawTitleScreen() {
   drawStartButton();
 }
 
+function drawNextLevelButton() {
+  let bw = min(width*0.28, 260);
+  let bh = min(height*0.09, 64);
+  let bx = width/2 - bw/2;
+  let by = height/2 + 90; // sits below the win text — adjust to taste
+  nextLevelBtn.x = bx; nextLevelBtn.y = by; nextLevelBtn.w = bw; nextLevelBtn.h = bh;
+
+  if (floor(frameCount/20)%2===0) {
+    noFill(); stroke(200,230,160,150); strokeWeight(3);
+    rect(bx-5, by-5, bw+10, bh+10, bh/2+5); noStroke();
+  }
+  noStroke(); fill(0,0,0,120); rect(bx+3, by+3, bw, bh, bh/2);
+  fill(90,55,20,235); rect(bx, by, bw, bh, bh/2);
+  stroke(200,160,90,220); strokeWeight(2); noFill();
+  rect(bx+2, by+2, bw-4, bh-4, (bh-4)/2); noStroke();
+
+  fill(255,248,235);
+  textAlign(CENTER,CENTER); textFont('Georgia'); textStyle(BOLD);
+  textSize(bh*0.32);
+  text('Go to Level 2', bx+bw/2, by+bh/2);
+  textStyle(NORMAL);
+}
+
 function drawStartButton() {
   let bw = min(titleImgRect.w*0.20, 260);
   let bh = min(titleImgRect.h*0.085, 70);
@@ -754,6 +778,7 @@ function drawWinScreen() {
   textStyle(NORMAL); textSize(height*0.024); fill(120,80,40);
   text('She found her way through the forest.',width/2,height/2+22);
   if (floor(frameCount/30)%2===0) { textSize(height*0.020); fill(160,110,60); text('press SPACE to play again',width/2,height/2+60); }
+drawNextLevelButton();
 }
 
 // ─────────────────────────────────────────────────────────
@@ -787,5 +812,14 @@ function mousePressed() {
     let inBtn = mouseX > startBtn.x && mouseX < startBtn.x + startBtn.w
              && mouseY > startBtn.y && mouseY < startBtn.y + startBtn.h;
     if (inBtn) showTitleScreen = false;
+    return;
+  }
+
+  if (gameWon) {
+    let inBtn = mouseX > nextLevelBtn.x && mouseX < nextLevelBtn.x + nextLevelBtn.w
+             && mouseY > nextLevelBtn.y && mouseY < nextLevelBtn.y + nextLevelBtn.h;
+    if (inBtn) {
+      window.location.href = "level2.html"; // ← change to your actual level 2 page filename
+    }
   }
 }
