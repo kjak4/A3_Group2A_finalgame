@@ -125,10 +125,11 @@ animals.forEach(a => a.startWx = a.wx);
 // screenshots the client sent are that canvas fully composited.
 // CLIMB_WX is the world-space x where canvas-x = 0 lands, so the
 // whole scene scrolls into view exactly like everything else.
-const CLIMB_WX   = 6600;
+const CLIMB_WX   = 6100;
 const CANVAS_W   = 1901;
 const CANVAS_H   = 1528;
 const GROUND_TOP_CANVAS_Y = 1255; // top edge of the ground.png strip
+
 
 
 // Makes the whole cliff/waterfall/platform formation read as a
@@ -146,7 +147,7 @@ const MOUNTAIN_SCALE = 1.15;
 // climb to show as the player goes up.
 const WATERFALL_DRAW_SCALE = 1.8;
 const PLATFORM_DRAW_SCALE = 1.2;
-
+const TOP_DRAW_SCALE = WATERFALL_DRAW_SCALE; // match left waterfall's enlargement
 
 // How far to shift waterfall.png upward on screen (canvas-space
 // pixels, before scaling) — the image was sitting low enough that
@@ -172,9 +173,17 @@ const TOP_CANVAS_H = 2200;
 // gap — nudge TOP_X_ALIGN_OFFSET/TOP_Y_ALIGN_OFFSET below once both
 // assets are visible together in-game and the rock texture needs a
 // pixel-level seam match (same idea as WATERFALL_Y_SHIFT above).
-const TOP_WX = CLIMB_WX + CANVAS_W;
-const TOP_X_ALIGN_OFFSET = 0; // canvas px — positive nudges the seam right, negative left
-const TOP_Y_ALIGN_OFFSET = 0; // canvas px — positive nudges down, negative up
+// How much to pull waterfall_top.png's anchor point LEFT from a
+// strict edge-to-edge placement, so it enters the frame sooner
+// (ideally alongside the left waterfall) instead of only appearing
+// after walking almost a full canvas-width into the climb zone.
+const TOP_OVERLAP = -150; // canvas px — bigger number = appears sooner
+
+const TOP_WX = CLIMB_WX + CANVAS_W - TOP_OVERLAP;
+
+const TOP_X_ALIGN_OFFSET = -292;
+const TOP_Y_ALIGN_OFFSET = -1380;
+
 
 
 // Uses the SAME height/canvasHeight formula as baseScale() — as long
@@ -190,10 +199,24 @@ const TOP_MOUNTAIN_SCALE = MOUNTAIN_SCALE;
 // Reaching this point in-world wins the level — see doorWorldX()
 // below. Adjust these two numbers to match exactly where the door
 // sits in the final exported asset.
-const DOOR_CANVAS_X = 640;
+const DOOR_CANVAS_X = 240;
 const DOOR_CANVAS_Y = 140;
 
+// Canvas-space Y (within waterfall_top.png's TOP_CANVAS_H) of the
+// walkable ground line baked into the art. Tune this by eye the
+// same way DOOR_CANVAS_Y was tuned — walk toward the door with
+// DEBUG_COLLISION on ('P') and adjust until the red line sits on
+// the rock's visible top edge.
+const TOP_LEDGE_CANVAS_Y = 400;
 
+// How far left/right (canvas px) the walkable ledge extends.
+// World-space X range for the ledge — defined in world coordinates
+// (not canvas-space) so it can span across BOTH waterfall.png and
+// waterfall_top.png, regardless of which piece of art is visually
+// underneath at a given point. Start somewhere within the left
+// waterfall's footprint, end somewhere within the top canvas's.
+const TOP_LEDGE_WX_START = CLIMB_WX + 500; // tune: where it starts, over waterfall.png
+const TOP_LEDGE_WX_END   = TOP_WX + 1800;   // tune: where it ends, over waterfall_top.png
 // bounding boxes (in canvas pixels) of each of the 20 stone
 // platforms baked into platforms.png, extracted directly from the
 // artwork so a *cropped sprite* of each rock lines up with its
@@ -237,6 +260,14 @@ const EXTRA_PLATFORM_FINAL_CENTERS = [
  [600, 880],
 ];
 
+// Same zoom-pivot treatment as climbScreenX/topScreenX, but for a
+// plain world-space x — lets something (like the ledge) span across
+// multiple canvases without being anchored to any single one's
+// coordinate space.
+function worldScreenX(wx) {
+ let rawX = toScreen(wx);
+ return charX + (rawX - charX) * camZoom;
+}
 
 // How much further apart (relative to the group's own center) each
 // platform gets pushed, independently per axis. 1.0 = original
@@ -371,7 +402,7 @@ let hasClimbed = false; // true once the player has landed on a platform this "l
 // (like a moving platform) as long as the character is still within
 // its X-range, instead of only re-detecting the crossing event.
 let standingPlatformIndex = -1;
-
+let onTopLedge = false;
 
 function inClimbZone(wx) { return wx >= CLIMB_ZONE_START && wx <= CLIMB_ZONE_END; }
 
@@ -467,6 +498,7 @@ const PAN_SPEED = 0.08;       // easing rate per frame toward the target pan
 
 
 function updateVerticalCamera() {
+
  let followY = height * FOLLOW_SCREEN_Y;
  let targetPan = min(0, charY - followY);
  camPanY += (targetPan - camPanY) * PAN_SPEED;
@@ -527,6 +559,34 @@ function drawDebugPlatformBoxes() {
  noStroke();
 }
 
+function drawDebugTopLedge() {
+ if (!DEBUG_COLLISION) return;
+ let ledgeY = topScreenY(TOP_LEDGE_CANVAS_Y);   // was climbScreenY — fixed
+ let lx0 = worldScreenX(TOP_LEDGE_WX_START);
+ let lx1 = worldScreenX(TOP_LEDGE_WX_END);
+ noStroke();
+ fill(255, 0, 255, 180);
+ rect(lx0, ledgeY - 100, lx1 - lx0, 200);
+ noFill();
+}
+
+function drawDebugDoor() {
+ if (!DEBUG_COLLISION) return;
+ let dx = topScreenX(DOOR_CANVAS_X);
+ let dy = topScreenY(DOOR_CANVAS_Y);
+ noFill(); stroke(255, 255, 0); strokeWeight(3);
+ ellipse(dx, dy, 40, 40);
+ line(dx-25, dy, dx+25, dy);
+ line(dx, dy-25, dx, dy+25);
+ noStroke();
+
+ // Also mark the actual win-trigger world position on the ground line,
+ // so you can see how close your character needs to walk to trigger it.
+ let winScreenX = worldScreenX(doorWorldX());
+ stroke(255, 255, 0); strokeWeight(2);
+ line(winScreenX, 0, winScreenX, height);
+ noStroke();
+}
 
 // ─────────────────────────────────────────────────────────
 function preload() {
@@ -621,6 +681,7 @@ clear();
 
  if ((keyIsDown(32)||keyIsDown(87)||keyIsDown(38)) && onGround) {
    velY=JUMP_FORCE; onGround=false; standingPlatformIndex=-1;
+   onTopLedge=false;
    if (sndJump && sndJump.isLoaded()) { sndJump.stop(); sndJump.setVolume(0.1); sndJump.play(); }
  }
 
@@ -706,6 +767,7 @@ let prevY = charY;
      charY = topY - CHAR_DRAW_OFFSET; velY = 0; onGround = true;
    } else {
      standingPlatformIndex = -1; // walked off the edge or jumped away
+     onTopLedge=false;
    }
  }
 
@@ -738,7 +800,39 @@ let prevY = charY;
    }
  }
 
+// Pass 3a: stay glued to the top ledge if we were already on it
+ // (same camera-drift fix as the platform "riding" pass above).
 
+  // Pass 3a
+// Pass 3a
+if (!onGround && onTopLedge) {
+   let ledgeY = topScreenY(TOP_LEDGE_CANVAS_Y);   // was climbScreenY — fixed
+   let lx0 = worldScreenX(TOP_LEDGE_WX_START);
+   let lx1 = worldScreenX(TOP_LEDGE_WX_END);
+   let withinX = charX > lx0 && charX < lx1;
+   let visFeet = charY + CHAR_DRAW_OFFSET;
+   let nearSurface = visFeet <= ledgeY + 8 && visFeet >= ledgeY - 8;
+   if (withinX && nearSurface && velY >= 0) {
+     charY = ledgeY - CHAR_DRAW_OFFSET; velY = 0; onGround = true;
+   } else {
+     onTopLedge = false;
+   }
+ }
+
+ // Pass 3b: fresh landing on the top ledge.
+if (!onGround) {
+   let ledgeY = topScreenY(TOP_LEDGE_CANVAS_Y);   // was climbScreenY — fixed
+   let lx0 = worldScreenX(TOP_LEDGE_WX_START);
+   let lx1 = worldScreenX(TOP_LEDGE_WX_END);
+   let withinX = charX > lx0 && charX < lx1;
+   let prevFeet = prevY + CHAR_DRAW_OFFSET;
+   let currFeet = charY + CHAR_DRAW_OFFSET;
+   if (withinX && prevFeet <= ledgeY && currFeet >= ledgeY && velY > 0) {
+     charY = ledgeY - CHAR_DRAW_OFFSET; velY = 0; onGround = true;
+     onTopLedge = true;
+     standingPlatformIndex = -1;
+   }
+ }
  // landing on a platform this frame "banks" the climb — falling
  // back to the base ground afterwards (before finishing the level)
  // now counts as falling off the cliff rather than a safe landing.
@@ -756,12 +850,14 @@ let prevY = charY;
      gameLost = true;
      loseReason = 'fall';
      standingPlatformIndex = -1;
+     onTopLedge=false;
      if (sndDamage && sndDamage.isLoaded()) { sndDamage.stop(); sndDamage.play(); }
      if (sndMusic && sndMusic.isLoaded()) sndMusic.stop();
      return;
    }
    charY = gy; velY = 0; onGround = true;
    standingPlatformIndex = -1;
+   onTopLedge=false;
  }
 
 
@@ -816,12 +912,12 @@ drawAnimals();
 push();
 translate(0, -camPanY);
 
-
 drawClimbScene(platformOpacity(revealHeld));
 drawCliffTop();
-drawDebugPlatformBoxes(); // no-op unless DEBUG_COLLISION is toggled on ('P')
+drawDebugPlatformBoxes();
+drawDebugDoor();
+drawDebugTopLedge();   // must be HERE, inside push/pop
 drawChar();
-
 
 pop();
 
@@ -985,7 +1081,8 @@ function drawClimbScene(opacity) {
  let leftSX  = climbScreenX(0);
  let rightSX = climbScreenX(CANVAS_W);
  if (rightSX < -50 || leftSX > width+50) return;
-
+// in drawClimbScene(), right after the leftSX/rightSX check:
+if (frameCount % 15 === 0) console.log('LEFT waterfall visible, worldX =', worldX, 'leftSX=', leftSX);
 
  imageMode(CORNER);
  // waterfall.png has a blank white margin on its left third — crop
@@ -1055,18 +1152,35 @@ function drawClimbScene(opacity) {
 // end of the main waterfall canvas. Uses the exact same "anchor +
 // scale, then draw the whole thing" approach as drawClimbScene(),
 // just against the TOP_* constants/topScreenX/topScreenY instead.
+// How far to nudge waterfall_top.png vertically (canvas-space px,
+// pre-scale) to line up its ground contact with groundY() — same
+// role as WATERFALL_Y_SHIFT plays for the left waterfall.
+const TOP_Y_SHIFT = 0; // tune this by eye once the base position is correct
+
 function drawCliffTop() {
- if (!imgCliffTop) return; // guard against a failed load
+ if (!imgCliffTop) return;
 
  let leftSX  = topScreenX(0);
  let rightSX = topScreenX(TOP_CANVAS_W);
- if (rightSX < -50 || leftSX > width+50) return;
+ if (rightSX < -50 || leftSX > width+50) { 
+   // in drawCliffTop(), right after its own leftSX/rightSX check:
+if (frameCount % 15 === 0) console.log('RIGHT cliff visible, worldX =', worldX, 'leftSX=', leftSX);
+ }
 
- let s2 = topBaseScale() * camZoom;
+ let centerCanvasX = TOP_CANVAS_W / 2;
+ let centerCanvasY = TOP_CANVAS_H / 2;
+ let centerScreenX = topScreenX(centerCanvasX);
+ let centerScreenY = topScreenY(centerCanvasY) - TOP_Y_SHIFT * (topBaseScale() * camZoom);
+
+ let s2 = topBaseScale() * camZoom * TOP_DRAW_SCALE;
  let dw = TOP_CANVAS_W * s2;
  let dh = TOP_CANVAS_H * s2;
- let dx = topScreenX(0);
- let dy = topScreenY(0);
+ let dx = centerScreenX - dw / 2;
+ let dy = centerScreenY - dh / 2;
+
+ if (frameCount % 30 === 0) {
+   console.log('cliffTop draw', {dx, dy, dw, dh, imgW: imgCliffTop.width, imgH: imgCliffTop.height});
+ }
 
  imageMode(CORNER);
  image(imgCliffTop, dx, dy, dw, dh);
@@ -1311,7 +1425,7 @@ function drawIntroOverlay() {
    text('Through the Canyon',width/2,height/2);
    if (introTimer > INTRO_FADE_FRAMES + 20) {
      fill(150,185,195,200); textStyle(NORMAL); textSize(height*0.020);
-     text('use A / D to move    SPACE to jump    climb the ledges in the waterfall',width/2,height/2+height*0.08);
+     text('use A / D to move    SPACE to jump    hold S to regain what you just saw... but it\'ll come at a price',width/2,height/2+height*0.08);
    }
    textStyle(NORMAL);
  }
@@ -1356,9 +1470,9 @@ function drawWinScreen() {
    fill(160,200,220); ellipse(px,py,14,14); fill(255,240,150); ellipse(px,py,6,6);
  }
  fill(30,70,85); textAlign(CENTER,CENTER); textFont('Georgia'); textStyle(BOLD);
- textSize(height*0.055); text('She climbed above the falls!',width/2,height/2-28);
+ textSize(height*0.055); text('She climbed above today\'s dangers',width/2,height/2-28);
  textStyle(NORMAL); textSize(height*0.024); fill(50,95,110);
- text('The canyon opened into the light.',width/2,height/2+22);
+ text('They survived another day!',width/2,height/2+22);
  if (floor(frameCount/30)%2===0) { textSize(height*0.020); fill(70,120,135); text('press SPACE to play again',width/2,height/2+60); }
 }
 
@@ -1389,6 +1503,7 @@ function keyPressed() {
    charX=width*0.25; charY=groundY();
    hasClimbed=false;
    standingPlatformIndex=-1;
+   onTopLedge=false;
    zoomOutTimer=0;
    camZoom=1; zoomedOut=false; camPanY=0;
    animals.forEach(a=>{a.wx=a.startWx;a.frame=0;a.ft=0;});
