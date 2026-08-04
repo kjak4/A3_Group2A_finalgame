@@ -5,10 +5,19 @@
 //   with its countdown + flashing warning, and the sunrise/sunset
 //   sky cycle. New this level: a set of stone platforms embedded
 //   in a big waterfall cliff that you can jump up onto and climb.)
+//
+//  UPDATED: brings back Level 1's 3-heart HP system and its
+//  ground obstacles (logs, rocks, rabbit/racoon). Hitting an
+//  obstacle costs one heart, exactly like Level 1. Falling off
+//  the waterfall platforms after you've climbed still kills you
+//  immediately and restarts the level (unchanged) — but it now
+//  also zeroes out all 3 hearts on the way down, since a fall
+//  from that height is meant to cost you everything at once.
 // ─────────────────────────────────────────────────────────
 
 let imgDistant, imgCloser, imgGround, imgTrees, imgBg1;
 let imgWaterfall, imgPlatforms, imgSprites;
+let imgLog, imgRock, imgRacoon, imgRabbit;
 
 // ── Sound variables ────────────────────────────────────────
 let sndMusic, sndJump, sndDamage, sndWin, sndWalk;
@@ -47,6 +56,12 @@ let facingLeft = false;
 let isMoving = false;
 let sKeyHeld = false;
 
+// ── HP / hearts (reused from Level 1) ───────────────────────
+let hp           = 3;
+const MAX_HP     = 3;
+let invTimer     = 0;
+const INV_FRAMES = 80;
+
 const GRAVITY    = 0.65;
 const JUMP_FORCE = -18;
 const WALK_SPEED = 4;
@@ -56,7 +71,7 @@ let worldX      = 0;
 const LEVEL_END = 9500;
 let gameWon     = false;
 let gameLost    = false;
-let loseReason  = 'time'; // 'time' | 'fall' — controls the lose-screen message
+let loseReason  = 'time'; // 'time' | 'fall' | 'hurt' — controls the lose-screen message
 
 let levelTimer      = 0;
 const TIME_LIMIT    = 100 * 60;
@@ -74,6 +89,20 @@ let   flipTimer     = 0;
 const FLIP_DURATION = 320;
 let   countdown     = 0;
 const COUNTDOWN_FRAMES = 55;
+
+// ── ground obstacles (reused from Level 1) ──────────────────
+// Placed along the canyon floor before the waterfall cliff set-piece
+// begins (CLIMB_ZONE_START is ~6200), so they never overlap the
+// climb — those two hazard types stay independent of each other.
+const LOGS  = [{ wx:900 }, { wx:2700 }, { wx:5100 }];
+const ROCKS = [{ wx:1450 }, { wx:3400 }, { wx:4600 }];
+
+let animals = [
+  { wx:2200, type:'rabbit', dir: 1, range:110, speed:2.0, frame:0, ft:0 },
+  { wx:3900, type:'racoon', dir: 1, range: 90, speed:1.5, frame:0, ft:0 },
+  { wx:5400, type:'rabbit', dir: 1, range:100, speed:1.8, frame:0, ft:0 },
+];
+animals.forEach(a => a.startWx = a.wx);
 
 // ── the big cliff / waterfall / platforms set-piece ────────
 // All of these assets share one 1901x1528 "design canvas" — the
@@ -404,6 +433,10 @@ function preload() {
   imgWaterfall = loadImage('assets/images/waterfall.png',          () => {}, onImgFail('waterfall.png'));
   imgPlatforms = loadImage('assets/images/platforms.png',          () => {}, onImgFail('platforms.png'));
   imgSprites   = loadImage('assets/images/sprites2.png',           () => {}, onImgFail('sprites2.png'));
+  imgLog       = loadImage('assets/images/log.png',                () => {}, onImgFail('log.png'));
+  imgRock      = loadImage('assets/images/rock.png',                () => {}, onImgFail('rock.png'));
+  imgRacoon    = loadImage('assets/images/racoon.png',              () => {}, onImgFail('racoon.png'));
+  imgRabbit    = loadImage('assets/images/rabbit.png',              () => {}, onImgFail('rabbit.png'));
 
   // Sounds are loaded in setup(), NOT here — see level 1 for why:
   // a missing/broken sound file can hang p5's preload tracking and
@@ -576,6 +609,11 @@ clear();
 
   if (!onGround && charY >= gy) {
     if (hasClimbed && inClimbZone(worldX)) {
+      // Falling from the waterfall climb is still an instant death —
+      // but it now also wipes all 3 hearts on the way down, so the
+      // HUD/lose-screen state reflects "lost everything" rather than
+      // just an unrelated instant kill sitting alongside the HP bar.
+      hp = 0;
       gameLost = true;
       loseReason = 'fall';
       standingPlatformIndex = -1;
@@ -588,6 +626,12 @@ clear();
   }
 
   updateFlip();
+
+  for (let a of animals) {
+    a.wx += a.dir * a.speed;
+    if (a.wx > a.startWx+a.range || a.wx < a.startWx-a.range) a.dir *= -1;
+    a.ft++; if (a.ft>=8) { a.ft=0; a.frame=(a.frame+1)%2; }
+  }
 
   if (worldX >= LEVEL_END) {
     gameWon=true;
@@ -603,6 +647,13 @@ clear();
     return;
   }
 
+  // Ground obstacles (logs/rocks/animals) work exactly like Level 1:
+  // a short invincibility window after each hit, otherwise check for
+  // a fresh collision every frame. These only matter before the climb
+  // zone, since that's where they're placed.
+  if (invTimer > 0) invTimer--;
+  else checkDamage();
+
   // The vertical pan wraps EVERYTHING that scrolls with the world
   // (background, cliff/waterfall, platforms, character) but not the
   // HUD — it's a simple screen-space shift applied on top of the
@@ -612,6 +663,8 @@ clear();
  // Background is drawn OUTSIDE the camPanY translate — it should
 // never pan with the vertical climb, only zoom about the pivot.
 drawBG();
+drawObstacles();
+drawAnimals();
 
 // Climb scene (waterfall/platforms) and character DO pan with
 // camPanY as the character climbs higher up the cliff.
@@ -671,6 +724,11 @@ function tileLayer(img, destH, destY, scrollAmt, growth = 1, anchorBottom = fals
 }
 
 function drawBG() {
+  // Explicitly CORNER here — tileLayer()'s positioning math assumes
+  // it, and imageMode is global/persistent in p5, so relying on
+  // whatever mode a previous draw call happened to leave behind is
+  // fragile (this is exactly what broke the background tiling).
+  imageMode(CORNER);
   let progress = levelTimer / TIME_LIMIT;
 
   // ── procedural sunrise/sunset gradient (same cycle as level 1) ──
@@ -739,7 +797,7 @@ function drawSkyGradient(skyTop, skyBot) {
   // strip of each, matching the reference screenshot proportions,
   // with the growth pushing their visible top edge further up.
     tileLayer(imgGround, height, 0, worldX*SCROLL_GROUND, GROUND_GROWTH, true);
-  tileLayer(imgTrees,   height, -210, worldX*SCROLL_GROUND, TREES_GROWTH,  true);
+  tileLayer(imgTrees,   height, -225, worldX*SCROLL_GROUND, TREES_GROWTH,  true);
  
 }
 
@@ -825,6 +883,86 @@ function drawClimbScene(opacity) {
 }
 
 // ─────────────────────────────────────────────────────────
+// ── ground obstacles (reused from Level 1) ──────────────────
+function drawObstacles() {
+  // groundY() is the physics ground line the character's feet sit on,
+  // but the character sprite itself is drawn CHAR_DRAW_OFFSET pixels
+  // higher (see drawChar) to compensate for empty padding baked into
+  // the sprite frame. Obstacles don't have that padding, so without
+  // the same correction they'd render sunk below the character's
+  // visible feet — applying it here puts them on the same visible
+  // ground line.
+  let gy=groundY()+CHAR_DRAW_OFFSET;
+  let logH=height*0.10, logW=logH*(139/88);
+  let rockH=height*0.08, rockW=rockH*(117/66);
+  imageMode(CORNER);
+  for (let o of LOGS) {
+    let sx=toScreen(o.wx);
+    if (sx<-200||sx>width+200) continue;
+    image(imgLog,sx,gy-logH,logW,logH,258,46,139,88);
+  }
+  for (let o of ROCKS) {
+    let sx=toScreen(o.wx);
+    if (sx<-200||sx>width+200) continue;
+    image(imgRock,sx,gy-rockH,rockW,rockH,115,56,117,66);
+  }
+}
+
+function drawAnimals() {
+  let gy=groundY()+CHAR_DRAW_OFFSET; // same visual correction as drawObstacles
+  imageMode(CORNER);
+  for (let a of animals) {
+    let sx=toScreen(a.wx);
+    if (sx<-200||sx>width+200) continue;
+    if (a.type==='racoon') {
+      let dh=height*0.09, dw=dh*(74/72), srcX=18+a.frame*74;
+      if (a.dir<0) { push(); translate(sx+dw,gy-dh); scale(-1,1); image(imgRacoon,0,0,dw,dh,srcX,288,74,72); pop(); }
+      else         { image(imgRacoon,sx,gy-dh,dw,dh,srcX,288,74,72); }
+    } else {
+      let dh=height*0.08, dw=dh*(95/80), srcX=a.frame*95;
+      if (a.dir<0) { push(); translate(sx+dw,gy-dh); scale(-1,1); image(imgRabbit,0,0,dw,dh,srcX,80,95,80); pop(); }
+      else         { image(imgRabbit,sx,gy-dh,dw,dh,srcX,80,95,80); }
+    }
+  }
+}
+
+// checkDamage/takeDamage mirror Level 1's obstacle-hit logic exactly
+// (one heart per hit, brief invincibility window) — the only hazard
+// type NOT handled here is the waterfall fall, which stays an
+// immediate, separate death handled up in draw() above.
+function checkDamage() {
+  let gy=groundY();
+  if (charY<gy-height*0.05) return;
+
+  let pw=width*0.010, px1=charX-pw, px2=charX+pw;
+  let logH=height*0.10, logW=logH*(139/88);
+  let rockH=height*0.08, rockW=rockH*(117/66);
+
+  for (let o of LOGS) {
+    let sx=toScreen(o.wx);
+    if (px2>sx+16&&px1<sx+logW-16) { takeDamage(); return; }
+  }
+  for (let o of ROCKS) {
+    let sx=toScreen(o.wx);
+    if (px2>sx+16&&px1<sx+rockW-16) { takeDamage(); return; }
+  }
+  for (let a of animals) {
+    let sx=toScreen(a.wx);
+    let dw=a.type==='racoon'?height*0.09*(74/72):height*0.08*(95/80);
+    if (px2>sx+12&&px1<sx+dw-12) { takeDamage(); return; }
+  }
+}
+
+function takeDamage() {
+  hp--; invTimer=INV_FRAMES;
+  if (sndDamage && sndDamage.isLoaded()) { sndDamage.stop(); sndDamage.setVolume(0.15); sndDamage.play(); }
+  if (hp<=0) {
+    hp=0; gameLost=true; loseReason='hurt';
+    if (sndMusic && sndMusic.isLoaded()) sndMusic.stop();
+  }
+}
+
+// ─────────────────────────────────────────────────────────
 function drawChar() {
   if (!imgSprites) return; // guard against a failed load
 
@@ -839,8 +977,27 @@ function drawChar() {
 }
 
 // ─────────────────────────────────────────────────────────
+function drawPixelHeart(x,y,s,full) {
+  let p=s/4;
+  let g=[[0,1,0,1,0],[1,1,1,1,1],[1,1,1,1,1],[0,1,1,1,0],[0,0,1,0,0]];
+  noStroke();
+  for (let r=0;r<5;r++) for (let c=0;c<5;c++) {
+    if (!g[r][c]) continue;
+    if (full) fill(r<2&&c<2?color(230,100,110):color(195,48,58));
+    else fill(60,45,45);
+    rect(x+c*p,y+r*p,p,p);
+  }
+  if (invTimer>0&&floor(invTimer/5)%2===0) {
+    fill(255,255,255,160);
+    for (let r=0;r<5;r++) for (let c=0;c<5;c++) if (g[r][c]) rect(x+c*p,y+r*p,p,p);
+  }
+}
+
+// ─────────────────────────────────────────────────────────
 function drawHUD() {
-  let pad=width*0.018;
+  let pad=width*0.018, hs=height*0.038;
+  for (let i=0;i<MAX_HP;i++) drawPixelHeart(pad+i*(hs*1.4), pad, hs, i<hp);
+
   let timeLeft=max(0,TIME_LIMIT-levelTimer), pct=timeLeft/TIME_LIMIT;
   let barW=width*0.18, barH=height*0.018;
   let bx=width-barW-pad, by=pad;
@@ -868,7 +1025,7 @@ function drawHUD() {
   if (DEBUG_COLLISION) {
     fill(255,255,0); textFont('monospace'); textStyle(BOLD); textSize(height*0.016);
     textAlign(LEFT,TOP);
-    text('DEBUG COLLISION ON (press P to toggle)', pad, pad);
+    text('DEBUG COLLISION ON (press P to toggle)', pad, pad + hs + 6);
     textStyle(NORMAL);
   }
 }
@@ -962,10 +1119,12 @@ function drawLoseScreen() {
   let cx=width/2, cy=height/2;
   noStroke(); fill(0,0,0,160);
   textAlign(CENTER,CENTER); textFont('Georgia'); textStyle(BOLD); textSize(height*0.052);
-  let headline = loseReason === 'fall' ? 'lost to the falls' : 'lost to the canyon';
-  let subtext  = loseReason === 'fall'
-    ? 'she slipped from the rocks and the current took her.'
-    : 'the light ran out before she reached the top.';
+  let headline = loseReason === 'fall' ? 'lost to the falls'
+               : loseReason === 'hurt' ? 'lost to the canyon'
+               : 'lost to the canyon';
+  let subtext  = loseReason === 'fall' ? 'she slipped from the rocks and the current took her.'
+               : loseReason === 'hurt' ? 'the canyon\'s dangers proved too much for her.'
+               : 'the light ran out before she reached the top.';
   text(headline,cx+2,cy-50+2);
   fill(180,215,225); text(headline,cx,cy-50);
   textStyle(NORMAL); textSize(height*0.022); fill(120,155,168);
@@ -1010,12 +1169,14 @@ function keyPressed() {
     worldX=0; flipped=false; flipTimer=0; flipIndex=0;
     introTimer=INTRO_DISPLAY_FRAMES + INTRO_FADE_FRAMES; introFadeStarted=false; countdown=0;
     levelTimer=0;
+    hp=MAX_HP; invTimer=0;
     velY=0; onGround=true;
     charX=width*0.25; charY=groundY();
     hasClimbed=false;
     standingPlatformIndex=-1;
     zoomOutTimer=0;
     camZoom=1; zoomedOut=false; camPanY=0;
+    animals.forEach(a=>{a.wx=a.startWx;a.frame=0;a.ft=0;});
     if (sndMusic && sndMusic.isLoaded()) { sndMusic.stop(); sndMusic.loop(); }
   }
 }
@@ -1032,5 +1193,3 @@ window.addEventListener('blur', () => { sKeyHeld = false; });
 function mousePressed() {
   startAudioOnce();
 }
-
-
