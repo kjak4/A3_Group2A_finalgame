@@ -123,21 +123,26 @@ function platY(p) { return groundY() - groundY() * p.wyOff; }
 
 // ─────────────────────────────────────────────────────────
 function preload() {
-  imgBgTrees   = loadImage('assets/images/Asset 11.png');
-  imgBushes    = loadImage('assets/images/Asset 9.png');
-  imgGround    = loadImage('assets/images/Asset 10.png');
-  imgFgTrees   = loadImage('assets/images/Asset 8.png');
-  imgSprites   = loadImage('assets/images/sprites2.png');
-  imgLog       = loadImage('assets/images/log.png');
-  imgRock      = loadImage('assets/images/rock.png');
-  imgRacoon    = loadImage('assets/images/racoon.png');
-  imgRabbit    = loadImage('assets/images/rabbit.png');
-  imgSign      = loadImage('assets/images/sign.png');
-  imgPlatform  = loadImage('assets/images/platform.png');
-  imgPlatform2 = loadImage('assets/images/platform2.png');
-  imgFloatingPlat = loadImage('assets/images/floatingplat.png');
-  imgFinishSign= loadImage('assets/images/youmadeit.png');
-  imgTitleScreen = loadImage('assets/images/titlescreen.PNG');
+  const onImgFail = (name) => (err) => {
+    console.warn(name + ' failed to load — check the path/case.', err);
+  };
+
+  imgBgTrees   = loadImage('assets/images/Asset 11.png', () => {}, onImgFail('Asset 11.png'));
+  imgBushes    = loadImage('assets/images/Asset 9.png', () => {}, onImgFail('Asset 9.png'));
+  imgGround    = loadImage('assets/images/Asset 10.png', () => {}, onImgFail('Asset 10.png'));
+  imgFgTrees   = loadImage('assets/images/Asset 8.png', () => {}, onImgFail('Asset 8.png'));
+  imgSprites   = loadImage('assets/images/sprites2.png', () => {}, onImgFail('sprites2.png'));
+  imgLog       = loadImage('assets/images/log.png', () => {}, onImgFail('log.png'));
+  imgRock      = loadImage('assets/images/rock.png', () => {}, onImgFail('rock.png'));
+  imgRacoon    = loadImage('assets/images/racoon.png', () => {}, onImgFail('racoon.png'));
+  imgRabbit    = loadImage('assets/images/rabbit.png', () => {}, onImgFail('rabbit.png'));
+  imgSign      = loadImage('assets/images/sign.png', () => {}, onImgFail('sign.png'));
+  imgPlatform  = loadImage('assets/images/platform.png', () => {}, onImgFail('platform.png'));
+  imgPlatform2 = loadImage('assets/images/platform2.png', () => {}, onImgFail('platform2.png'));
+  imgFloatingPlat = loadImage('assets/images/floatingplat.png', () => {}, onImgFail('floatingplat.png'));
+  imgFinishSign= loadImage('assets/images/youmadeit.png', () => {}, onImgFail('youmadeit.png'));
+  imgTitleScreen = loadImage('assets/images/titlescreen.PNG', () => {}, onImgFail('titlescreen.PNG'));
+
 
   // NOTE: sounds are deliberately NOT loaded here. p5.sound's preload
   // tracking does not reliably resolve on a failed/missing file even
